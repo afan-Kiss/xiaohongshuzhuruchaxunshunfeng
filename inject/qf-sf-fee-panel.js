@@ -4,9 +4,11 @@
  * 丰桥凭证：config.json → sf.partnerID / sf.checkWord（或侧栏 ⚙ 一次）
  */
 (function qfSfFeePanelBootstrap() {
-  const VERSION = '1.0.22';
+  const VERSION = '1.0.31';
   const ICON_POS_KEY = 'qsf_icon_pos_v1';
   const STORAGE_KEY = 'qf_sf_fee_config_v1';
+  const BUYER_CACHE_KEY = 'qsf_buyer_panel_v1';
+  const MAX_BUYER_CACHE = 80;
   const SF_PROD = 'https://sfapi.sf-express.com/std/service';
   const SF_SBOX = 'https://sfapi-sbox.sf-express.com/std/service';
   const PANEL_ID = 'qf-sf-fee-panel-root';
@@ -42,7 +44,7 @@
     } else {
       const root = document.getElementById(PANEL_ID);
       if (root?.classList.contains('qsf-expanded') && typeof window.__qfSfFeePanel.refresh === 'function') {
-        void window.__qfSfFeePanel.refresh({ force: true });
+        void window.__qfSfFeePanel.refresh({ preferCache: true });
       }
       return;
     }
@@ -374,6 +376,128 @@
     return `${cfg.sandbox ? 'sbox' : 'prod'}:${no}`;
   }
 
+  function panelConfigCacheKey(cfg) {
+    const mode = cfg.sandbox ? 'sbox' : 'prod';
+    const partner = String(cfg.partnerID || '').trim();
+    return `${mode}:${partner}`;
+  }
+
+  function loadBuyerCacheStore() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(BUYER_CACHE_KEY) || '{}');
+      if (!raw || typeof raw !== 'object') return { v: VERSION, buyers: {} };
+      if (!raw.buyers || typeof raw.buyers !== 'object') return { v: VERSION, buyers: {} };
+      return raw;
+    } catch {
+      return { v: VERSION, buyers: {} };
+    }
+  }
+
+  function saveBuyerCacheStore(store) {
+    try {
+      localStorage.setItem(BUYER_CACHE_KEY, JSON.stringify(store));
+    } catch {
+      /* ignore quota */
+    }
+  }
+
+  function ensureBuyerCacheVersion() {
+    const store = loadBuyerCacheStore();
+    if (store.v !== VERSION) {
+      saveBuyerCacheStore({ v: VERSION, buyers: {} });
+    }
+  }
+
+  function reconcileCachedEntry(entry, buyerUserId) {
+    if (!entry) return null;
+    const visibleIds = getVisibleOrderPackageIds();
+    const snap = getOrderPanelSnapshot();
+
+    if (entry.empty) {
+      if (visibleIds.length > 0 || (snap.cardCount > 0 && !snap.empty)) return null;
+      return entry;
+    }
+
+    if (!Array.isArray(entry.cards) || !entry.cards.length) return null;
+
+    const pkgIdOf = (row) => String(row?.pkg?.packageId || row?.pkg?.orderId || '').trim();
+
+    if (entry.visibleOrderIds?.length && visibleIds.length) {
+      const prevKey = entry.visibleOrderIds.join('\u0001');
+      const curKey = visibleIds.join('\u0001');
+      if (prevKey !== curKey) {
+        const overlap = visibleIds.some((id) => entry.visibleOrderIds.includes(id));
+        if (!overlap) return null;
+      }
+    }
+
+    let cards = entry.cards.filter((row) => {
+      const pid = pkgIdOf(row);
+      return pid && (!visibleIds.length || visibleIds.includes(pid));
+    });
+
+    if (visibleIds.length) {
+      cards = visibleIds
+        .map((id) => cards.find((row) => pkgIdOf(row) === id))
+        .filter(Boolean);
+      if (visibleIds.length === 1 && cards.length > 1) cards = cards.slice(0, 1);
+      if (!cards.length) return null;
+    }
+
+    return { ...entry, cards };
+  }
+
+  function loadBuyerPanelCache(buyerUserId, cfg) {
+    const uid = String(buyerUserId || '').trim();
+    if (!uid) return null;
+    const store = loadBuyerCacheStore();
+    if (store.v !== VERSION) return null;
+    const entry = store.buyers?.[uid];
+    if (!entry) return null;
+    if (entry.cfgKey !== panelConfigCacheKey(cfg)) return null;
+    return reconcileCachedEntry(entry, uid);
+  }
+
+  function saveBuyerPanelCache(buyerUserId, entry) {
+    const uid = String(buyerUserId || '').trim();
+    if (!uid || !entry) return;
+    const store = loadBuyerCacheStore();
+    store.v = VERSION;
+    if (!store.buyers) store.buyers = {};
+    store.buyers[uid] = entry;
+    const keys = Object.keys(store.buyers);
+    if (keys.length > MAX_BUYER_CACHE) {
+      keys.sort((a, b) => (store.buyers[a]?.updatedAt || 0) - (store.buyers[b]?.updatedAt || 0));
+      for (let i = 0; i < keys.length - MAX_BUYER_CACHE; i += 1) {
+        delete store.buyers[keys[i]];
+      }
+    }
+    saveBuyerCacheStore(store);
+  }
+
+  function clearBuyerPanelCache() {
+    try {
+      localStorage.removeItem(BUYER_CACHE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function sanitizeFeeForCache(fee) {
+    if (!fee || typeof fee !== 'object') return fee;
+    const { raw, ...rest } = fee;
+    return rest;
+  }
+
+  function hydrateExpressCacheFromCards(cards, cfg) {
+    for (const row of cards || []) {
+      const no = row?.pkg?.expressNo;
+      const fee = row?.fee;
+      if (!no || !fee) continue;
+      expressCache.set(feeCacheKey(cfg, no), fee);
+    }
+  }
+
   function findChatItem(el) {
     let node = el;
     while (node && node !== document.body) {
@@ -383,13 +507,20 @@
     return null;
   }
 
-  function isSfExpressNo(no, company) {
+  const NON_SF_HINT = '非顺丰运单（单号非 SF 开头），本侧栏仅支持查询顺丰月结费用';
+
+  function isSfExpressNo(no) {
     const n = String(no || '').trim().toUpperCase();
-    const c = String(company || '');
-    if (!n) return false;
-    if (/^SF\d{10,}$/.test(n)) return true;
-    if (/顺丰|SF/i.test(c) && n.length >= 10) return true;
-    return false;
+    return /^SF\d{10,}$/.test(n);
+  }
+
+  function makeNonSfFeeResult(expressNo) {
+    const company = String(expressNo || '').trim();
+    return {
+      ok: false,
+      skipped: true,
+      error: company ? NON_SF_HINT : '暂无运单号',
+    };
   }
 
   function money(n) {
@@ -471,10 +602,13 @@
 
   // ─── 运单缓存（网络 hook 写入） ─────────────────────────────────────
   const buyerPackages = new Map(); // buyerUserId -> Map(expressNo -> pkg)
+  const buyerPackageById = new Map(); // `${buyerUserId}:${packageId}` -> pkg
   const expressCache = new Map(); // expressNo -> sf fee result
+  const sfFeeInflight = new Map(); // cacheKey -> Promise
   let activeBuyer = { buyerUserId: '', buyerNick: '', appCid: '' };
   let refreshInFlight = false;
   let refreshSession = 0;
+  let orderPanelStale = false;
 
   function orderPanelRoot() {
     return document.querySelector('.order-tool-content')
@@ -525,6 +659,227 @@
     return [...ids];
   }
 
+  function parsePackageIdFromUrl(url) {
+    const u = String(url || '');
+    let m = u.match(/\/package\/([^/?#]+)\/detail/i);
+    if (m) return decodeURIComponent(m[1]);
+    m = u.match(/[?&]packageId=([^&]+)/i);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  function pkgByIdKey(buyerUserId, packageId) {
+    const uid = String(buyerUserId || '').trim();
+    const pid = String(packageId || '').trim();
+    return uid && pid ? `${uid}:${pid}` : '';
+  }
+
+  function getVisibleOrderPackageIds() {
+    const root = orderPanelRoot();
+    if (!root) return [];
+    const ids = [];
+    const seen = new Set();
+    for (const el of root.querySelectorAll('.order-card .order-card-title-id')) {
+      const id = el.textContent?.trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+    }
+    return ids;
+  }
+
+  function pruneStalePackagesForBuyer(buyerUserId) {
+    const uid = String(buyerUserId || '').trim();
+    if (!uid || orderPanelStale) return;
+    const visibleSet = new Set(getVisibleOrderPackageIds());
+    if (!visibleSet.size) return;
+    for (const key of [...buyerPackageById.keys()]) {
+      if (!key.startsWith(`${uid}:`)) continue;
+      const pid = key.slice(uid.length + 1);
+      if (!visibleSet.has(pid)) buyerPackageById.delete(key);
+    }
+    const pkgs = buyerPackages.get(uid);
+    if (pkgs) {
+      for (const [no, pkg] of [...pkgs.entries()]) {
+        const ids = mergeOrderIds(pkg.orderIds, pkg.orderId, pkg.packageId);
+        if (!ids.some((id) => visibleSet.has(id))) pkgs.delete(no);
+      }
+    }
+  }
+
+  function finalizePackagesForDisplay(pkgs, buyerUserId) {
+    const visibleIds = getVisibleOrderPackageIds();
+    const byPackageId = new Map();
+
+    for (const pkg of pkgs || []) {
+      const pid = String(pkg.packageId || pkg.orderId || '').trim();
+      const expressNo = String(pkg.expressNo || '').trim();
+      if (!pid || !expressNo) continue;
+      if (visibleIds.length && !visibleIds.includes(pid)) continue;
+      const prev = byPackageId.get(pid);
+      byPackageId.set(pid, prev ? { ...prev, ...pkg, packageId: pid, orderId: pid } : { ...pkg, packageId: pid, orderId: pid });
+    }
+
+    let list = visibleIds.length
+      ? visibleIds.map((id) => byPackageId.get(id)).filter(Boolean)
+      : [...byPackageId.values()];
+
+    // 可见订单数固定时，结果条数不得超过订单数
+    if (visibleIds.length && list.length > visibleIds.length) {
+      list = visibleIds.map((id) => byPackageId.get(id)).filter(Boolean);
+    }
+
+    // 仅 1 单时不应出现 2 条（去掉游离/过期缓存项）
+    if (visibleIds.length === 1 && list.length > 1) {
+      list = list.filter((p) => String(p.packageId) === visibleIds[0]).slice(0, 1);
+    }
+
+    return sortSfPackages(list);
+  }
+
+  function getOrderPanelSnapshot() {
+    const root = orderPanelRoot();
+    if (!root) return { ready: false, cardCount: 0, empty: false, loading: true };
+    const visibleIds = getVisibleOrderPackageIds();
+    const cardCount = visibleIds.length || root.querySelectorAll('.order-card').length;
+    const text = (root.innerText || '').replace(/\s+/g, ' ');
+    const empty = cardCount === 0 && /暂无|无订单|没有订单|未找到订单|无相关订单|暂无数据|还没有订单/i.test(text);
+    const loading = cardCount === 0 && /加载中|loading|请稍候/i.test(text);
+    return {
+      ready: cardCount > 0 || empty || (!loading && cardCount === 0),
+      cardCount,
+      empty,
+      loading,
+    };
+  }
+
+  async function waitForOrderPanelReady(sessionId, maxMs = 1100) {
+    const deadline = Date.now() + maxMs;
+    let lastSnap = getOrderPanelSnapshot();
+    while (Date.now() < deadline) {
+      if (sessionId !== undefined && sessionId !== refreshSession) return null;
+      const snap = getOrderPanelSnapshot();
+      lastSnap = snap;
+      if (snap.cardCount > 0) return snap;
+      if (snap.empty) return snap;
+      if (snap.ready && !snap.loading && snap.cardCount === 0) return snap;
+      await sleep(50);
+    }
+    return lastSnap;
+  }
+
+  function tryQuickCollect(buyerUserId) {
+    const uid = String(buyerUserId || '').trim();
+    if (!uid || orderPanelStale) return null;
+    const snap = getOrderPanelSnapshot();
+    if (snap.empty) return [];
+    scrapeOrderCardsFromPanel();
+    pruneStalePackagesForBuyer(uid);
+    const visibleIds = getVisibleOrderPackageIds();
+    if (!visibleIds.length) {
+      if (snap.ready && snap.cardCount === 0) return [];
+      return null;
+    }
+    const pkgs = collectAllPackages(uid);
+    const loaded = countLoadedOrderExpress(uid, visibleIds);
+    if (loaded >= visibleIds.length) return pkgs;
+    if (pkgs.length && loaded > 0 && pkgs.length <= visibleIds.length) return pkgs;
+    return null;
+  }
+
+  function countLoadedOrderExpress(buyerUserId, visibleIds) {
+    const uid = String(buyerUserId || '').trim();
+    let count = 0;
+    for (const packageId of visibleIds) {
+      const fromId = buyerPackageById.get(pkgByIdKey(uid, packageId));
+      if (fromId?.expressNo) {
+        count += 1;
+        continue;
+      }
+      const card = findCardByPackageId(packageId);
+      if (extractExpressFromCardLogistics(card).expressNo) count += 1;
+    }
+    return count;
+  }
+
+  function findCardByPackageId(packageId) {
+    const root = orderPanelRoot();
+    if (!root || !packageId) return null;
+    for (const card of root.querySelectorAll('.order-card')) {
+      const id = card.querySelector('.order-card-title-id')?.textContent?.trim();
+      if (id === packageId) return card;
+    }
+    return null;
+  }
+
+  function extractExpressFromCardLogistics(card) {
+    if (!card) return { expressNo: '', expressCompany: '' };
+    const logistics = card.querySelector('.delivery-row-logistics, .logistics-box');
+    if (!logistics) return { expressNo: '', expressCompany: '' };
+    const text = logistics.innerText || '';
+    const m = text.match(/\b([A-Z]{1,4}\d{10,20})\b/i);
+    if (!m) return { expressNo: '', expressCompany: '' };
+    const expressNo = m[1].toUpperCase();
+    const companyMatch = text.match(/(顺丰速运|顺丰|圆通|中通|韵达|申通|极兔|京东|EMS|邮政|德邦)/);
+    return { expressNo, expressCompany: companyMatch ? companyMatch[1] : '' };
+  }
+
+  function extractSfFromCardLogistics(card) {
+    const { expressNo } = extractExpressFromCardLogistics(card);
+    return isSfExpressNo(expressNo) ? expressNo : '';
+  }
+
+  function isRelevantToActiveBuyer(buyerUserId, packageId) {
+    if (!activeBuyer.buyerUserId) return false;
+    if (orderPanelStale) return Boolean(buyerUserId && buyerUserId === activeBuyer.buyerUserId);
+    if (buyerUserId && buyerUserId === activeBuyer.buyerUserId) return true;
+    if (packageId && getVisibleOrderPackageIds().includes(packageId)) return true;
+    return false;
+  }
+
+  function indexPackageById(buyerUserId, pkg) {
+    const uid = String(buyerUserId || '').trim();
+    const packageId = String(pkg.packageId || pkg.orderId || '').trim();
+    if (!uid || !packageId) return;
+    const key = pkgByIdKey(uid, packageId);
+    const prev = buyerPackageById.get(key) || {};
+    const merged = {
+      ...prev,
+      ...pkg,
+      packageId,
+      orderId: packageId,
+      orderIds: [packageId],
+    };
+    buyerPackageById.set(key, merged);
+    if (merged.expressNo && isSfExpressNo(merged.expressNo)) {
+      indexPackage(uid, { ...merged, packageId });
+    }
+  }
+
+  function ingestPackageDetailEnvelope(json, meta = {}) {
+    if (!json || typeof json !== 'object') return false;
+    const data = json.data && typeof json.data === 'object' ? json.data : null;
+    if (!data) return false;
+    const urlPid = String(meta.packageId || '').trim();
+    const packageId = String(data.package_id || data.packageId || urlPid || '').trim();
+    if (!packageId) return false;
+    const userId = String(data.user_id || data.buyer_user_id || '').trim();
+    const expressNo = String(
+      data.express_number || data.express_no || data.expressNo || data.ship_express_no || '',
+    ).trim();
+    const expressCompany = String(data.express_company || data.expressCompany || '').trim();
+    const orderId = String(data.order_id || data.orderId || packageId).trim();
+    const uid = userId || (isRelevantToActiveBuyer('', packageId) ? activeBuyer.buyerUserId : '');
+    if (!uid) return false;
+    const lastTrace = pickTraceText(data);
+    indexPackageById(uid, {
+      packageId,
+      expressNo: expressNo.toUpperCase(),
+      expressCompany,
+      ...(lastTrace ? { lastTrace } : {}),
+    });
+    return Boolean(expressNo);
+  }
+
   function resolveBuyerTrace(buyerUserId) {
     const domTrace = scrapeLogisticsFromPanel();
     if (domTrace) {
@@ -544,16 +899,20 @@
 
   function indexPackage(buyerUserId, pkg) {
     const uid = String(buyerUserId || '').trim();
-    const no = String(pkg.expressNo || '').trim();
+    const no = String(pkg.expressNo || '').trim().toUpperCase();
     if (!uid || !no) return;
+    const packageId = String(pkg.packageId || pkg.orderId || '').trim();
     if (!buyerPackages.has(uid)) buyerPackages.set(uid, new Map());
     const prev = buyerPackages.get(uid).get(no) || {};
-    const orderIds = mergeOrderIds(prev.orderIds, prev.orderId, pkg.orderId, pkg.orderIds);
+    const orderIds = packageId
+      ? mergeOrderIds(prev.orderIds, packageId)
+      : mergeOrderIds(prev.orderIds, prev.orderId, pkg.orderId);
     buyerPackages.get(uid).set(no, {
       ...prev,
       ...pkg,
       expressNo: no,
-      orderId: orderIds[0] || prev.orderId || pkg.orderId || '',
+      packageId: packageId || prev.packageId || '',
+      orderId: packageId || prev.orderId || pkg.orderId || '',
       orderIds,
       lastTrace: pkg.lastTrace ? pkg.lastTrace : (prev.lastTrace || ''),
     });
@@ -581,21 +940,22 @@
     }
   }
 
-  let ingestRefreshTimer = null;
+  function shouldIngestApiUrl(url) {
+    const u = String(url || '');
+    if (!u || /sf-express\.com/i.test(u)) return false;
+    if (!/xiaohongshu/i.test(u)) return false;
+    return /\/api\/edith\/(package|order|logistics|express)/i.test(u)
+      || /search-list/i.test(u)
+      || /\/package\//i.test(u)
+      || /logistics/i.test(u);
+  }
 
   function scheduleIngestRefresh(reason) {
     if (!activeBuyer.buyerUserId || refreshInFlight) return;
     if (reason === 'traceOnly') {
       if (isPanelExpanded()) patchTraceDisplay();
-      return;
     }
-    if (!isPanelExpanded()) return;
-    clearTimeout(ingestRefreshTimer);
-    ingestRefreshTimer = setTimeout(() => {
-      if (!refreshInFlight && activeBuyer.buyerUserId && isPanelExpanded()) {
-        void refreshPanel({ waitForData: false });
-      }
-    }, 1200);
+    // 不因 hook 到新运单号就自动全量刷新，避免重复查费、长时间 loading
   }
 
   function patchTraceDisplay() {
@@ -615,37 +975,48 @@
     bodyEl.querySelectorAll('.qsf-card .qsf-trace').forEach((el) => el.remove());
   }
 
-  function ingestJsonBody(json) {
+  function ingestJsonBody(json, meta = {}) {
     if (!json || typeof json !== 'object') return;
+    const reqUrl = String(meta.url || '');
+    const urlPid = String(meta.packageId || parsePackageIdFromUrl(reqUrl) || '').trim();
     let refreshReason = null;
+    const fromDetail = ingestPackageDetailEnvelope(json, { ...meta, packageId: urlPid });
+    if (fromDetail && activeBuyer.buyerUserId) refreshReason = 'newExpress';
+    if (!fromDetail && !shouldIngestApiUrl(reqUrl)) return;
     walkJson(json, (node) => {
       const buyerUserId = String(node.buyer_user_id || node.buyerUserId || '').trim();
       const expressNo = String(
         node.express_no || node.express_number || node.expressNo || node.ship_express_no || node.tracking_no || '',
-      ).trim();
+      ).trim().toUpperCase();
       const expressCompany = String(node.express_company || node.expressCompanyName || node.express_company_name || '').trim();
-      const orderId = String(node.order_id || node.orderId || '').trim();
       const packageId = String(node.package_id || node.packageId || '').trim();
       const lastTrace = pickTraceText(node);
-      const pkgBase = { expressCompany, orderId, packageId, ...(lastTrace ? { lastTrace } : {}) };
-      const isActive = buyerUserId === activeBuyer.buyerUserId
-        || (!buyerUserId && expressNo && activeBuyer.buyerUserId);
-      if (buyerUserId && expressNo) {
-        const prev = buyerPackages.get(buyerUserId)?.get(expressNo);
-        indexPackage(buyerUserId, { ...pkgBase, expressNo });
-        if (isActive) refreshReason = prev ? 'traceOnly' : 'newExpress';
-      } else if (expressNo && isSfExpressNo(expressNo, expressCompany) && activeBuyer.buyerUserId) {
-        const prev = buyerPackages.get(activeBuyer.buyerUserId)?.get(expressNo);
-        indexPackage(activeBuyer.buyerUserId, { ...pkgBase, expressNo });
-        refreshReason = prev ? 'traceOnly' : 'newExpress';
-      } else if (lastTrace && buyerUserId) {
-        const pkgs = buyerPackages.get(buyerUserId);
-        if (pkgs && pkgs.size === 1) {
-          const only = [...pkgs.values()][0];
-          if (only) {
-            indexPackage(buyerUserId, { ...only, lastTrace });
-            if (buyerUserId === activeBuyer.buyerUserId) refreshReason = 'traceOnly';
-          }
+      const isDetailUrl = /\/package\/[^/?#]+\/detail/i.test(String(meta.url || ''));
+      const resolvedPackageId = packageId || (isDetailUrl && urlPid ? urlPid : '');
+      const uid = buyerUserId
+        || (resolvedPackageId && isRelevantToActiveBuyer('', resolvedPackageId) ? activeBuyer.buyerUserId : '');
+      const isActive = Boolean(uid && uid === activeBuyer.buyerUserId);
+      const pkgBase = {
+        expressCompany,
+        orderId: resolvedPackageId,
+        packageId: resolvedPackageId,
+        ...(lastTrace ? { lastTrace } : {}),
+      };
+
+      if (!uid || !resolvedPackageId) return;
+
+      if (expressNo) {
+        const hadExpress = buyerPackages.get(uid)?.has(expressNo);
+        indexPackageById(uid, { ...pkgBase, expressNo });
+        if (isActive && isSfExpressNo(expressNo)) {
+          indexPackage(uid, { ...pkgBase, expressNo, packageId: resolvedPackageId });
+          refreshReason = hadExpress ? 'traceOnly' : 'newExpress';
+        }
+      } else if (lastTrace && isActive) {
+        const prevPkg = buyerPackageById.get(pkgByIdKey(uid, resolvedPackageId));
+        if (prevPkg?.expressNo) {
+          indexPackageById(uid, { ...prevPkg, lastTrace });
+          refreshReason = 'traceOnly';
         }
       }
     });
@@ -661,10 +1032,12 @@
       const res = await orig(input, init);
       if (/sf-express\.com/i.test(reqUrl)) return res;
       try {
+        if (!shouldIngestApiUrl(reqUrl)) return res;
         const clone = res.clone();
         const ct = clone.headers.get('content-type') || '';
-        if ((ct.includes('json') || /xiaohongshu/i.test(reqUrl)) && !/sf-express\.com/i.test(reqUrl)) {
-          clone.json().then(ingestJsonBody).catch(() => {});
+        if (ct.includes('json') || /xiaohongshu/i.test(reqUrl)) {
+          const meta = { url: reqUrl, packageId: parsePackageIdFromUrl(reqUrl) };
+          clone.json().then((j) => ingestJsonBody(j, meta)).catch(() => {});
         }
       } catch {
         /* ignore */
@@ -685,14 +1058,17 @@
     XMLHttpRequest.prototype.send = function patchedSend(body) {
       this.addEventListener('load', function onLoad() {
         try {
-          if (String(this.responseType) === 'json' && this.response) ingestJsonBody(this.response);
+          const url = this.__qfSfUrl || '';
+          if (!shouldIngestApiUrl(url)) return;
+          const meta = { url, packageId: parsePackageIdFromUrl(url) };
+          if (String(this.responseType) === 'json' && this.response) ingestJsonBody(this.response, meta);
           else if (typeof this.responseText === 'string' && this.responseText.startsWith('{')) {
-            ingestJsonBody(JSON.parse(this.responseText));
+            ingestJsonBody(JSON.parse(this.responseText), meta);
           }
         } catch {
           /* ignore */
         }
-      });
+      }, { once: true });
       return origSend.apply(this, arguments);
     };
   }
@@ -716,70 +1092,129 @@
     });
   }
 
+  function ingestOrderCardElement(card, buyerUserId) {
+    if (!card || !buyerUserId) return;
+    const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+    if (!packageId) return;
+    const logistics = card.querySelector('.delivery-row-logistics, .logistics-box');
+    const { expressNo, expressCompany } = extractExpressFromCardLogistics(card);
+    const primaryNo = scrapeLogisticsExpressNo();
+    indexPackageById(buyerUserId, {
+      orderId: packageId,
+      packageId,
+      ...(expressNo ? {
+        expressNo,
+        expressCompany: expressCompany || (isSfExpressNo(expressNo) ? '顺丰' : ''),
+        primary: expressNo === primaryNo,
+        lastTrace: scrapeLogisticsFromBox(logistics),
+      } : {}),
+    });
+  }
+
+  async function waitForCardPackageData(buyerUserId, packageId, card, sessionId, timeoutMs = 800) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (sessionId !== undefined && sessionId !== refreshSession) return null;
+      const cached = buyerPackageById.get(pkgByIdKey(buyerUserId, packageId));
+      if (cached?.expressNo) return cached;
+      ingestOrderCardElement(card, buyerUserId);
+      const { expressNo, expressCompany } = extractExpressFromCardLogistics(card);
+      if (expressNo) {
+        const row = {
+          expressNo,
+          expressCompany: expressCompany || (isSfExpressNo(expressNo) ? '顺丰' : ''),
+          packageId,
+          orderId: packageId,
+        };
+        indexPackageById(buyerUserId, row);
+        return row;
+      }
+      await sleep(45);
+    }
+    ingestOrderCardElement(card, buyerUserId);
+    return buyerPackageById.get(pkgByIdKey(buyerUserId, packageId)) || null;
+  }
+
+  function cardNeedsExpressLoad(buyerUserId, card, packageId) {
+    const cached = buyerPackageById.get(pkgByIdKey(buyerUserId, packageId));
+    if (cached?.expressNo) return false;
+    return !extractExpressFromCardLogistics(card).expressNo;
+  }
+
+  function hasPendingExpressLoad(buyerUserId) {
+    const root = orderPanelRoot();
+    if (!root) return false;
+    for (const card of root.querySelectorAll('.order-card')) {
+      const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+      if (packageId && cardNeedsExpressLoad(buyerUserId, card, packageId)) return true;
+    }
+    return false;
+  }
+
+  async function autoLoadOrderCards(buyerUserId, sessionId) {
+    const root = orderPanelRoot();
+    if (!root || !buyerUserId) return;
+    const cards = [...root.querySelectorAll('.order-card')];
+    if (!cards.length) return;
+    const pending = cards.filter((card) => {
+      const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+      return packageId && cardNeedsExpressLoad(buyerUserId, card, packageId);
+    });
+    if (!pending.length) return;
+    for (const card of pending) {
+      if (sessionId !== undefined && sessionId !== refreshSession) return;
+      const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+      if (!packageId) continue;
+      ingestOrderCardElement(card, buyerUserId);
+      try {
+        card.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+      } catch {
+        /* ignore */
+      }
+      await sleep(30);
+      const clickTarget = card.querySelector('.order-card-header')
+        || card.querySelector('.order-card-title')
+        || card.querySelector('.order-card-title-id')
+        || card;
+      try {
+        clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        clickTarget.click?.();
+      } catch {
+        /* ignore */
+      }
+      const hasLogistics = card.querySelector('.delivery-row-logistics, .logistics-box');
+      await waitForCardPackageData(buyerUserId, packageId, card, sessionId, hasLogistics ? 800 : 320);
+    }
+  }
+
   function scrapeOrderCardsFromPanel() {
     const root = orderPanelRoot();
     if (!root) return [];
     const primaryNo = scrapeLogisticsExpressNo();
     const found = new Map();
-    const cards = root.querySelectorAll('.order-card');
-    cards.forEach((card) => {
-      const orderId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
-      const logistics = card.querySelector('.delivery-row-logistics, .logistics-box');
-      const text = card.innerText || '';
-      const sfMatch = text.match(/\b(SF\d{10,15})\b/i);
-      if (!sfMatch) return;
-      const no = sfMatch[1].toUpperCase();
-      if (!isSfExpressNo(no, '顺丰')) return;
-      const trace = scrapeLogisticsFromBox(logistics);
-      const prev = found.get(no) || { expressNo: no, expressCompany: '顺丰', orderIds: [] };
-      if (orderId) prev.orderIds = mergeOrderIds(prev.orderIds, orderId);
-      if (trace) prev.lastTrace = trace;
-      prev.primary = no === primaryNo;
-      found.set(no, prev);
+    root.querySelectorAll('.order-card').forEach((card) => {
+      if (activeBuyer.buyerUserId) ingestOrderCardElement(card, activeBuyer.buyerUserId);
+      const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+      const { expressNo, expressCompany } = extractExpressFromCardLogistics(card);
+      if (!expressNo || !packageId) return;
+      found.set(packageId, {
+        expressNo,
+        expressCompany: expressCompany || (isSfExpressNo(expressNo) ? '顺丰' : ''),
+        orderId: packageId,
+        packageId,
+        primary: expressNo === primaryNo,
+        lastTrace: scrapeLogisticsFromBox(card.querySelector('.delivery-row-logistics, .logistics-box')),
+      });
     });
-    return sortSfPackages([...found.values()].map((p) => ({
-      ...p,
-      orderId: (p.orderIds && p.orderIds[0]) || p.orderId || '',
-    })));
+    return sortSfPackages([...found.values()]);
   }
 
   function scrapeDomExpress() {
-    const root = orderPanelRoot();
-    const found = new Map();
-    const primaryNo = scrapeLogisticsExpressNo();
-
-    const addNo = (no, extra = {}) => {
-      const upper = String(no || '').trim().toUpperCase();
-      if (!isSfExpressNo(upper, '顺丰')) return;
-      const prev = found.get(upper) || {};
-      found.set(upper, {
-        expressNo: upper,
-        expressCompany: '顺丰',
-        orderId: prev.orderId || extra.orderId || '',
-        orderIds: mergeOrderIds(prev.orderIds, extra.orderIds, extra.orderId),
-        packageId: extra.packageId || prev.packageId || '',
-        primary: upper === primaryNo,
-        lastTrace: extra.lastTrace || prev.lastTrace || '',
-        ...extra,
-        expressNo: upper,
-      });
-    };
-
-    for (const pkg of scrapeOrderCardsFromPanel()) addNo(pkg.expressNo, pkg);
-
-    if (primaryNo) addNo(primaryNo, { lastTrace: scrapeLogisticsFromPanel() });
-
-    if (root) {
-      const re = /\b(SF\d{10,15})\b/gi;
-      let m;
-      const text = root.innerText || '';
-      while ((m = re.exec(text))) addNo(m[1]);
-    }
-
+    const pkgs = scrapeOrderCardsFromPanel();
     if (activeBuyer.buyerUserId) {
-      for (const pkg of found.values()) indexPackage(activeBuyer.buyerUserId, pkg);
+      for (const pkg of pkgs) indexPackageById(activeBuyer.buyerUserId, pkg);
     }
-    return sortSfPackages([...found.values()]);
+    return pkgs;
   }
 
   function scrapeDomTrace(root) {
@@ -792,9 +1227,64 @@
   function collectAllPackages(buyerUserId) {
     const uid = String(buyerUserId || '').trim();
     if (!uid) return [];
-    scrapeDomExpress();
-    const fromCache = buyerPackages.has(uid) ? [...buyerPackages.get(uid).values()] : [];
-    return sortSfPackages(fromCache.filter((p) => isSfExpressNo(p.expressNo, p.expressCompany)));
+    scrapeOrderCardsFromPanel();
+    pruneStalePackagesForBuyer(uid);
+    const visibleIds = getVisibleOrderPackageIds();
+    const primaryNo = scrapeLogisticsExpressNo();
+    const result = new Map();
+
+    for (const packageId of visibleIds) {
+      const key = pkgByIdKey(uid, packageId);
+      const fromId = buyerPackageById.get(key);
+      if (fromId?.expressNo) {
+        result.set(packageId, {
+          ...fromId,
+          packageId,
+          orderId: packageId,
+          primary: fromId.expressNo === primaryNo,
+        });
+        continue;
+      }
+      const card = findCardByPackageId(packageId);
+      const { expressNo, expressCompany } = extractExpressFromCardLogistics(card);
+      if (expressNo) {
+        const pkg = {
+          expressNo,
+          expressCompany: expressCompany || (isSfExpressNo(expressNo) ? '顺丰' : ''),
+          packageId,
+          orderId: packageId,
+          primary: expressNo === primaryNo,
+        };
+        indexPackageById(uid, pkg);
+        result.set(packageId, pkg);
+      }
+    }
+
+    return finalizePackagesForDisplay([...result.values()], uid);
+  }
+
+  async function collectAllPackagesAsync(buyerUserId, sessionId) {
+    const quick = tryQuickCollect(buyerUserId);
+    if (quick !== null) {
+      orderPanelStale = false;
+      return quick;
+    }
+    const panelSnap = await waitForOrderPanelReady(sessionId, 1100);
+    if (sessionId !== undefined && sessionId !== refreshSession) return [];
+    orderPanelStale = false;
+    if (panelSnap?.empty || (panelSnap?.ready && panelSnap.cardCount === 0 && !panelSnap?.loading)) {
+      return [];
+    }
+    if (!panelSnap?.cardCount && panelSnap?.loading) {
+      const retry = await waitForOrderPanelReady(sessionId, 700);
+      if (sessionId !== undefined && sessionId !== refreshSession) return [];
+      if (retry?.empty || (retry?.ready && retry.cardCount === 0)) return [];
+      if (!retry?.cardCount) return [];
+    } else if (!panelSnap?.cardCount) {
+      return [];
+    }
+    await autoLoadOrderCards(buyerUserId, sessionId);
+    return collectAllPackages(buyerUserId);
   }
 
   function packagesForBuyer(buyerUserId) {
@@ -805,123 +1295,140 @@
   async function querySfWaybillFee(expressNo, cfg) {
     const no = String(expressNo || '').trim();
     if (!no) return { ok: false, error: '缺少运单号' };
+    if (!isSfExpressNo(no)) return makeNonSfFeeResult(no);
     const ck = feeCacheKey(cfg, no);
     if (expressCache.has(ck)) {
       const cached = expressCache.get(ck);
-      if (cached.ok || cached.apiCode === 'A1004' || cached.apiCode === '8152') return cached;
+      if (
+        cached.ok
+        || cached.skipped
+        || cached.apiCode === 'A1004'
+        || cached.apiCode === '8152'
+        || cached.apiCode === '8148'
+      ) return cached;
       expressCache.delete(ck);
     }
+    if (sfFeeInflight.has(ck)) return sfFeeInflight.get(ck);
 
-    if (!cfg.partnerID || !resolveCheckWord(cfg)) {
-      const hint = cfg.sandbox ? '请配置沙箱校验码 checkWordSandbox' : '请配置丰桥 partnerID 与 checkWord';
-      return { ok: false, error: `请先在 ⚙ ${hint}` };
-    }
+    const job = (async () => {
+      if (!cfg.partnerID || !resolveCheckWord(cfg)) {
+        const hint = cfg.sandbox ? '请配置沙箱校验码 checkWordSandbox' : '请配置丰桥 partnerID 与 checkWord';
+        return { ok: false, error: `请先在 ⚙ ${hint}` };
+      }
 
-    const checkWord = resolveCheckWord(cfg);
-    const msgData = JSON.stringify({ trackingType: '2', trackingNum: no, ...(cfg.phoneLast4 ? { phone: cfg.phoneLast4 } : {}) });
-    const timestamp = Date.now();
-    const msgDigest = sfMsgDigest(msgData, timestamp, checkWord);
-    const body = new URLSearchParams({
-      partnerID: cfg.partnerID,
-      requestID: uuid(),
-      serviceCode: 'EXP_RECE_QUERY_SFWAYBILL',
-      timestamp: String(timestamp),
-      msgDigest,
-      msgData,
-    });
-
-    const url = cfg.sandbox ? SF_SBOX : SF_PROD;
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-        body: body.toString(),
+      const checkWord = resolveCheckWord(cfg);
+      const msgData = JSON.stringify({ trackingType: '2', trackingNum: no, ...(cfg.phoneLast4 ? { phone: cfg.phoneLast4 } : {}) });
+      const timestamp = Date.now();
+      const msgDigest = sfMsgDigest(msgData, timestamp, checkWord);
+      const body = new URLSearchParams({
+        partnerID: cfg.partnerID,
+        requestID: uuid(),
+        serviceCode: 'EXP_RECE_QUERY_SFWAYBILL',
+        timestamp: String(timestamp),
+        msgDigest,
+        msgData,
       });
-      const text = await res.text();
-      let outer;
+
+      const url = cfg.sandbox ? SF_SBOX : SF_PROD;
       try {
-        outer = JSON.parse(text);
-      } catch {
-        return { ok: false, error: `顺丰响应非 JSON：${text.slice(0, 120)}` };
-      }
-      const outerCode = String(outer.apiResultCode || '').trim();
-      if (outerCode && outerCode !== 'A1000') {
-        let errMsg = outer.apiErrorMsg || '查询失败';
-        const apiCode = outerCode;
-        if (apiCode === 'A1004' || /无对应服务权限/.test(errMsg)) {
-          errMsg =
-            '丰桥未开通「清单运费查询」接口权限（A1004）。'
-            + '请登录 qiao.sf-express.com → 应用管理 → 关联 API → 勾选 EXP_RECE_QUERY_SFWAYBILL，'
-            + '沙箱联调 3 次成功后上线生产环境。';
-        } else if (apiCode === 'A1006' || /数字签名无效/.test(errMsg)) {
-          errMsg = '丰桥数字签名无效（A1006）。请核对顾客编码与校验码是否匹配当前环境（沙箱/生产）。';
-        }
-        const result = { ok: false, error: errMsg, apiCode };
-        if (apiCode !== 'A1006') expressCache.set(ck, result);
-        return result;
-      }
-      let inner = outer;
-      if (typeof outer.apiResultData === 'string') {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+          body: body.toString(),
+        });
+        const text = await res.text();
+        let outer;
         try {
-          inner = JSON.parse(outer.apiResultData);
+          outer = JSON.parse(text);
         } catch {
-          inner = { success: false, errorMsg: outer.apiErrorMsg || 'apiResultData 解析失败' };
+          return { ok: false, error: `顺丰响应非 JSON：${text.slice(0, 120)}` };
         }
-      }
-      if (!inner.success && inner.success !== true) {
-        const apiCode = outer.apiResultCode || inner.errorCode || '';
-        let errMsg = inner.errorMsg || outer.apiErrorMsg || '查询失败';
-        if (apiCode === 'A1004' || /无对应服务权限/.test(errMsg)) {
-          errMsg =
-            '丰桥未开通「清单运费查询」接口权限（A1004）。'
-            + '请登录 qiao.sf-express.com → 应用管理 → 关联 API → 勾选 EXP_RECE_QUERY_SFWAYBILL，'
-            + '沙箱联调 3 次成功后上线生产环境。';
-        } else if (apiCode === 'A1006' || /数字签名无效/.test(errMsg)) {
-          errMsg = '丰桥数字签名无效（A1006）。请核对顾客编码与校验码是否匹配当前环境（沙箱/生产）。';
-        } else if (String(inner.errorCode || '') === '8152' || /月结卡号没有配置/.test(errMsg)) {
-          errMsg = '月结卡号未在丰桥配置正确（8152）。请在丰桥应用里绑定你的顺丰月结账号后再查。';
-        } else if (String(inner.errorCode || '') === '8148' || /没有运单信息/.test(errMsg)) {
-          errMsg =
-            '丰桥查不到该运单的月结费用（8148）。'
-            + '千帆有物流轨迹 ≠ 该单挂在你月结账号下；'
-            + '常见原因：退回件单号、他司月结发货、买家付运费。请以下方有金额的运单为准。';
+        const outerCode = String(outer.apiResultCode || '').trim();
+        if (outerCode && outerCode !== 'A1000') {
+          let errMsg = outer.apiErrorMsg || '查询失败';
+          const apiCode = outerCode;
+          if (apiCode === 'A1004' || /无对应服务权限/.test(errMsg)) {
+            errMsg =
+              '丰桥未开通「清单运费查询」接口权限（A1004）。'
+              + '请登录 qiao.sf-express.com → 应用管理 → 关联 API → 勾选 EXP_RECE_QUERY_SFWAYBILL，'
+              + '沙箱联调 3 次成功后上线生产环境。';
+          } else if (apiCode === 'A1006' || /数字签名无效/.test(errMsg)) {
+            errMsg = '丰桥数字签名无效（A1006）。请核对顾客编码与校验码是否匹配当前环境（沙箱/生产）。';
+          }
+          const result = { ok: false, error: errMsg, apiCode };
+          if (apiCode !== 'A1006') expressCache.set(ck, result);
+          return result;
         }
-        const result = { ok: false, error: errMsg, raw: inner, apiCode };
-        if (apiCode !== 'A1006') expressCache.set(ck, result);
+        let inner = outer;
+        if (typeof outer.apiResultData === 'string') {
+          try {
+            inner = JSON.parse(outer.apiResultData);
+          } catch {
+            inner = { success: false, errorMsg: outer.apiErrorMsg || 'apiResultData 解析失败' };
+          }
+        }
+        if (!inner.success && inner.success !== true) {
+          const apiCode = outer.apiResultCode || inner.errorCode || '';
+          let errMsg = inner.errorMsg || outer.apiErrorMsg || '查询失败';
+          if (apiCode === 'A1004' || /无对应服务权限/.test(errMsg)) {
+            errMsg =
+              '丰桥未开通「清单运费查询」接口权限（A1004）。'
+              + '请登录 qiao.sf-express.com → 应用管理 → 关联 API → 勾选 EXP_RECE_QUERY_SFWAYBILL，'
+              + '沙箱联调 3 次成功后上线生产环境。';
+          } else if (apiCode === 'A1006' || /数字签名无效/.test(errMsg)) {
+            errMsg = '丰桥数字签名无效（A1006）。请核对顾客编码与校验码是否匹配当前环境（沙箱/生产）。';
+          } else if (String(inner.errorCode || '') === '8152' || /月结卡号没有配置/.test(errMsg)) {
+            errMsg = '月结卡号未在丰桥配置正确（8152）。请在丰桥应用里绑定你的顺丰月结账号后再查。';
+          } else if (String(inner.errorCode || '') === '8148' || /没有运单信息/.test(errMsg)) {
+            errMsg =
+              '丰桥查不到该运单的月结费用（8148）。'
+              + '千帆有物流轨迹 ≠ 该单挂在你月结账号下；'
+              + '常见原因：退回件单号、他司月结发货、买家付运费。请以下方有金额的运单为准。';
+          }
+          const result = { ok: false, error: errMsg, raw: inner, apiCode: apiCode || String(inner.errorCode || '') };
+          if (apiCode !== 'A1006') expressCache.set(ck, result);
+          return result;
+        }
+        const data = inner.msgData || inner;
+        const info = data.waybillInfo || {};
+        const fees = data.waybillFeeList || [];
+        const total = fees.reduce((s, f) => s + (Number(f.feeAmt ?? f.value) || 0), 0) || info.totalFee;
+        const result = {
+          ok: true,
+          waybillNo: info.waybillNo || no,
+          customerAcctCode: info.customerAcctCode || '',
+          meterageWeightQty: info.meterageWeightQty,
+          realWeightQty: info.realWeightQty,
+          jProvince: info.jProvince,
+          jCity: info.jCity,
+          dProvince: info.dProvince,
+          dCity: info.dCity,
+          addresseeContName: info.addresseeContName,
+          expressTypeCode: info.expressTypeCode,
+          waybillChilds: info.waybillChilds,
+          totalFee: total,
+          fees: fees.map((f) => ({
+            name: f.feeName || f.name || '费用',
+            amount: Number(f.feeAmt ?? f.value) || 0,
+            settlement: f.settlementTypeCode === '2' ? '月结' : f.settlementTypeCode === '1' ? '现结' : '',
+          })),
+        };
+        expressCache.set(ck, result);
         return result;
+      } catch (err) {
+        const msg = String(err.message || err);
+        const hint = /failed to fetch|network|cors/i.test(msg)
+          ? '（若报跨域：千帆 Electron 可能拦截外网请求，需在丰桥侧确认或联系管理员）'
+          : '';
+        return { ok: false, error: msg + hint };
       }
-      const data = inner.msgData || inner;
-      const info = data.waybillInfo || {};
-      const fees = data.waybillFeeList || [];
-      const total = fees.reduce((s, f) => s + (Number(f.feeAmt ?? f.value) || 0), 0) || info.totalFee;
-      const result = {
-        ok: true,
-        waybillNo: info.waybillNo || no,
-        customerAcctCode: info.customerAcctCode || '',
-        meterageWeightQty: info.meterageWeightQty,
-        realWeightQty: info.realWeightQty,
-        jProvince: info.jProvince,
-        jCity: info.jCity,
-        dProvince: info.dProvince,
-        dCity: info.dCity,
-        addresseeContName: info.addresseeContName,
-        expressTypeCode: info.expressTypeCode,
-        waybillChilds: info.waybillChilds,
-        totalFee: total,
-        fees: fees.map((f) => ({
-          name: f.feeName || f.name || '费用',
-          amount: Number(f.feeAmt ?? f.value) || 0,
-          settlement: f.settlementTypeCode === '2' ? '月结' : f.settlementTypeCode === '1' ? '现结' : '',
-        })),
-      };
-      expressCache.set(ck, result);
-      return result;
-    } catch (err) {
-      const msg = String(err.message || err);
-      const hint = /failed to fetch|network|cors/i.test(msg)
-        ? '（若报跨域：千帆 Electron 可能拦截外网请求，需在丰桥侧确认或联系管理员）'
-        : '';
-      return { ok: false, error: msg + hint };
+    })();
+
+    sfFeeInflight.set(ck, job);
+    try {
+      return await job;
+    } finally {
+      sfFeeInflight.delete(ck);
     }
   }
 
@@ -949,28 +1456,129 @@
     return `${renderBuyerHeader(buyerNick, buyerUserId)}<div class="qsf-buffer"><div class="qsf-buffer-bar"><div class="qsf-buffer-bar-inner"></div></div><div class="qsf-loading">${esc(text || '正在加载运单信息…')}</div></div>`;
   }
 
-  function sfPackagesForBuyer(buyerUserId) {
-    return packagesForBuyer(buyerUserId).filter((p) => isSfExpressNo(p.expressNo, p.expressCompany));
+  function sortPanelCards(cards) {
+    return [...cards].sort((a, b) => {
+      if (a.fee?.ok && !b.fee?.ok) return -1;
+      if (!a.fee?.ok && b.fee?.ok) return 1;
+      if (a.fee?.skipped && !b.fee?.skipped) return 1;
+      if (!a.fee?.skipped && b.fee?.skipped) return -1;
+      if (a.pkg?.primary && !b.pkg?.primary) return -1;
+      if (!a.pkg?.primary && b.pkg?.primary) return 1;
+      return 0;
+    });
   }
 
-  async function waitForSfPackages(buyerUserId, sessionId, maxMs = 8000, intervalMs = 400) {
+  function formatPanelFooterTime(updatedAt, fromCache) {
+    const t = new Date(updatedAt || Date.now()).toLocaleTimeString('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    return fromCache ? `缓存 ${t}` : `已更新 ${t}`;
+  }
+
+  function renderPanelCards(buyerNick, buyerUserId, cards, updatedAt, opts = {}) {
+    const fromCache = opts.fromCache === true;
+    const sorted = sortPanelCards(cards);
+    let html = renderBuyerHeader(buyerNick, buyerUserId);
+    const okCards = sorted.filter((c) => c.fee?.ok);
+    if (sorted.length > 1) {
+      const sum = okCards.reduce((s, c) => s + (Number(c.fee?.totalFee) || 0), 0);
+      html += `<div class="qsf-summary">共 ${sorted.length} 个运单 · 可计费 ${okCards.length} 单 · 合计 ${money(sum)}</div>`;
+    }
+    for (const { pkg, fee } of sorted) {
+      html += `<div class="qsf-card">`;
+      const companyLabel = pkg.expressCompany && !isSfExpressNo(pkg.expressNo)
+        ? `${esc(pkg.expressCompany)} · `
+        : '';
+      html += `<div class="qsf-no">${companyLabel}${esc(pkg.expressNo)}</div>`;
+      if (sorted.length > 1 && (pkg.orderId || (pkg.orderIds && pkg.orderIds.length))) {
+        const ids = mergeOrderIds(pkg.orderIds, pkg.orderId);
+        if (ids.length) html += `<div class="qsf-meta" style="margin-top:2px;">订单 ${esc(ids.join(' / '))}</div>`;
+      }
+      if (fee?.skipped) {
+        html += `<div class="qsf-hint">${esc(fee.error)}</div>`;
+      } else if (!fee?.ok) {
+        html += `<div class="qsf-err">${esc(fee?.error || '查询失败')}</div>`;
+      } else {
+        html += `<div class="qsf-total">${money(fee.totalFee)}</div>`;
+        html += renderFeeCardMeta(fee, pkg);
+        for (const line of fee.fees || []) {
+          html += `<div class="qsf-fee-line"><span>${esc(line.name)}${line.settlement ? ` (${line.settlement})` : ''}</span><span>${money(line.amount)}</span></div>`;
+        }
+      }
+      html += `</div>`;
+    }
+    const hint = fromCache ? ' · 点 ↻ 重新查询' : '';
+    html += `<div class="qsf-meta" style="text-align:center;margin-top:8px;">${formatPanelFooterTime(updatedAt, fromCache)} · v${VERSION}${hint}</div>`;
+    return html;
+  }
+
+  function sfPackagesForBuyer(buyerUserId) {
+    return packagesForBuyer(buyerUserId).filter((p) => isSfExpressNo(p.expressNo));
+  }
+
+  function renderEmptySfPanel(buyerNick, buyerUserId, opts = {}) {
+    const fromCache = opts.fromCache === true;
+    const updatedAt = opts.updatedAt || Date.now();
+    const noOrder = opts.noOrder === true;
+    let msg = noOrder
+      ? '该买家暂无订单'
+      : '未找到顺丰运单号';
+    if (!noOrder) {
+      msg += '<br><br>请确认该买家已发货，并在千帆右侧订单区加载完成后再点 ↻ 刷新'
+        + '<br><small>侧栏会从页面网络响应和 DOM 中自动抓取 express_no</small>';
+    }
+    const hint = fromCache ? ' · 点 ↻ 重新查询' : '';
+    return `
+      ${renderBuyerHeader(buyerNick, buyerUserId)}
+      <div class="qsf-empty">${msg}</div>
+      <div class="qsf-meta" style="text-align:center;margin-top:8px;">${formatPanelFooterTime(updatedAt, fromCache)} · v${VERSION}${hint}</div>
+    `;
+  }
+
+  async function waitForSfPackages(buyerUserId, sessionId) {
+    const quick = tryQuickCollect(buyerUserId);
+    if (quick !== null) {
+      orderPanelStale = false;
+      return quick;
+    }
+
+    let panelSnap = await waitForOrderPanelReady(sessionId, 1100);
+    if (sessionId !== refreshSession) return null;
+    orderPanelStale = false;
+    pruneStalePackagesForBuyer(buyerUserId);
+
+    if (panelSnap?.empty) return [];
+
+    if (!panelSnap?.cardCount) {
+      if (panelSnap?.loading) {
+        panelSnap = await waitForOrderPanelReady(sessionId, 700);
+        if (sessionId !== refreshSession) return null;
+      }
+      if (panelSnap?.empty || (panelSnap?.ready && panelSnap.cardCount === 0)) return [];
+      if (!panelSnap?.cardCount) return [];
+    }
+
+    const visibleIds = getVisibleOrderPackageIds();
+    const cardCount = visibleIds.length || panelSnap?.cardCount || 0;
+    if (!cardCount) return [];
+
+    const maxMs = Math.min(6000, 800 + (cardCount - countLoadedOrderExpress(buyerUserId, visibleIds)) * 400);
     const deadline = Date.now() + maxMs;
-    let best = [];
-    let stableRounds = 0;
-    let prevLen = 0;
+    await autoLoadOrderCards(buyerUserId, sessionId);
+    let pkgs = collectAllPackages(buyerUserId);
+    if (countLoadedOrderExpress(buyerUserId, visibleIds) >= cardCount) return pkgs;
+
     while (Date.now() < deadline) {
       if (sessionId !== refreshSession) return null;
-      const sfPkgs = collectAllPackages(buyerUserId);
-      if (sfPkgs.length > best.length) best = sfPkgs;
-      if (sfPkgs.length > 0 && sfPkgs.length === prevLen) stableRounds += 1;
-      else stableRounds = 0;
-      prevLen = sfPkgs.length;
-      if (sfPkgs.length && stableRounds >= 2) break;
-      await sleep(intervalMs);
+      if (!hasPendingExpressLoad(buyerUserId)) return pkgs;
+      await autoLoadOrderCards(buyerUserId, sessionId);
+      pkgs = collectAllPackages(buyerUserId);
+      if (countLoadedOrderExpress(buyerUserId, visibleIds) >= cardCount) return pkgs;
+      await sleep(100);
     }
-    if (sessionId !== refreshSession) return null;
-    const finalPkgs = collectAllPackages(buyerUserId);
-    return finalPkgs.length ? finalPkgs : best;
+    return pkgs;
   }
 
   function setRefreshLoading(on) {
@@ -995,7 +1603,7 @@
     panelEl.classList.remove('qsf-icon-only');
     panelEl.classList.add('qsf-expanded');
     clearIconInlinePos();
-    void refreshPanel({ waitForData: true });
+    void refreshPanel({ preferCache: true });
   }
 
   function collapseToIcon() {
@@ -1205,6 +1813,7 @@
       }
       #${PANEL_ID} .qsf-fee-line { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; }
       #${PANEL_ID} .qsf-err { color: #dc2626; font-size: 12px; }
+      #${PANEL_ID} .qsf-hint { color: #92400e; font-size: 12px; line-height: 1.5; }
       #${PANEL_ID} .qsf-empty { color: #9ca3af; text-align: center; padding: 24px 8px; line-height: 1.6; }
       #${PANEL_ID} .qsf-settings {
         display: none; padding: 10px 12px; border-top: 1px solid #e5e7eb; background: #fafafa; flex-shrink: 0;
@@ -1340,6 +1949,7 @@
     };
     saveConfig(cfg);
     expressCache.clear();
+    clearBuyerPanelCache();
     settingsEl.classList.remove('open');
     if (isPanelExpanded()) void refreshPanel();
   }
@@ -1348,101 +1958,113 @@
     buildPanel();
     if (!isPanelExpanded()) return;
     const force = opts.force === true;
-    const waitForData = opts.waitForData !== false && !force;
+    const preferCache = opts.preferCache === true && !force;
+    const waitForData = !force && (opts.waitForData !== false || preferCache);
     const sessionId = ++refreshSession;
+    const cfg = loadConfig();
+    const { buyerUserId, buyerNick } = activeBuyer;
+
+    if (!buyerUserId) {
+      bodyEl.innerHTML = '<div class="qsf-empty">请在左侧点击一个买家会话</div>';
+      return;
+    }
+
+    if (preferCache) {
+      const cached = loadBuyerPanelCache(buyerUserId, cfg);
+      if (cached) {
+        if (cached.empty) {
+          bodyEl.innerHTML = renderEmptySfPanel(
+            cached.buyerNick || buyerNick,
+            buyerUserId,
+            { fromCache: true, updatedAt: cached.updatedAt, noOrder: cached.noOrder === true },
+          );
+          return;
+        }
+        if (cached.cards?.length) {
+          hydrateExpressCacheFromCards(cached.cards, cfg);
+          bodyEl.innerHTML = renderPanelCards(
+            cached.buyerNick || buyerNick,
+            buyerUserId,
+            cached.cards,
+            cached.updatedAt,
+            { fromCache: true },
+          );
+          return;
+        }
+      }
+    }
+
+    if (refreshInFlight && !force) return;
+
     setRefreshLoading(true);
     refreshInFlight = true;
 
     try {
-      const cfg = loadConfig();
-      const { buyerUserId, buyerNick } = activeBuyer;
-
-      if (!buyerUserId) {
-        if (sessionId !== refreshSession) return;
-        bodyEl.innerHTML = '<div class="qsf-empty">请在左侧点击一个买家会话</div>';
-        return;
-      }
-
-      if (force) {
-        syncActiveBuyerFromDom();
-        collectAllPackages(buyerUserId);
-      }
+      if (force) syncActiveBuyerFromDom();
 
       if (sessionId !== refreshSession) return;
       bodyEl.innerHTML = renderLoadingPanel(
         buyerNick,
-        waitForData ? '正在同步该买家全部运单…' : '正在刷新全部顺丰运单与月结费用…',
+        waitForData ? '正在自动加载全部订单运单…' : '正在刷新全部顺丰运单与月结费用…',
         buyerUserId,
       );
 
-      let sfPkgs;
-      if (waitForData) {
-        sfPkgs = await waitForSfPackages(buyerUserId, sessionId);
-      } else {
-        sfPkgs = collectAllPackages(buyerUserId);
-      }
+      const rawPkgs = waitForData
+        ? await waitForSfPackages(buyerUserId, sessionId)
+        : await collectAllPackagesAsync(buyerUserId, sessionId);
       if (sessionId !== refreshSession) return;
+      const sfPkgs = finalizePackagesForDisplay(rawPkgs || [], buyerUserId);
 
       if (force) {
-        for (const pkg of sfPkgs || []) expressCache.delete(feeCacheKey(cfg, pkg.expressNo));
+        for (const pkg of sfPkgs || []) {
+          if (isSfExpressNo(pkg.expressNo)) expressCache.delete(feeCacheKey(cfg, pkg.expressNo));
+        }
       }
 
       if (!sfPkgs || !sfPkgs.length) {
-        bodyEl.innerHTML = `
-          ${renderBuyerHeader(buyerNick, buyerUserId)}
-          <div class="qsf-empty">未找到顺丰运单号<br><br>请确认该买家已发货，并在千帆右侧订单区加载完成后再点 ↻ 刷新<br><small>侧栏会从页面网络响应和 DOM 中自动抓取 express_no</small></div>
-        `;
+        const snap = getOrderPanelSnapshot();
+        const noOrder = snap.empty || (snap.ready && snap.cardCount === 0);
+        const updatedAt = Date.now();
+        saveBuyerPanelCache(buyerUserId, {
+          buyerNick,
+          updatedAt,
+          cfgKey: panelConfigCacheKey(cfg),
+          empty: true,
+          noOrder,
+          visibleOrderIds: getVisibleOrderPackageIds(),
+          cards: [],
+        });
+        bodyEl.innerHTML = renderEmptySfPanel(buyerNick, buyerUserId, { noOrder, updatedAt });
         return;
       }
 
       bodyEl.innerHTML = renderLoadingPanel(buyerNick, '正在查询月结费用…', buyerUserId);
 
-      const cards = [];
-      for (const pkg of sfPkgs) {
-        if (sessionId !== refreshSession) return;
-        const fee = await querySfWaybillFee(pkg.expressNo, cfg);
-        cards.push({ pkg, fee });
-      }
-      if (sessionId !== refreshSession) return;
-
-      cards.sort((a, b) => {
-        if (a.fee.ok && !b.fee.ok) return -1;
-        if (!a.fee.ok && b.fee.ok) return 1;
-        if (a.pkg.primary && !b.pkg.primary) return -1;
-        if (!a.pkg.primary && b.pkg.primary) return 1;
-        return 0;
-      });
-
-      let html = renderBuyerHeader(buyerNick, buyerUserId);
-      const orderCardCount = orderPanelRoot()?.querySelectorAll('.order-card').length || 0;
-      const okCards = cards.filter((c) => c.fee.ok);
-      if (cards.length > 1) {
-        const sum = okCards.reduce((s, c) => s + (Number(c.fee.totalFee) || 0), 0);
-        html += `<div class="qsf-summary">共 ${cards.length} 个运单 · 可计费 ${okCards.length} 单 · 合计 ${money(sum)}</div>`;
-      }
-      if (orderCardCount > cards.length && orderCardCount > 1) {
-        html += `<div class="qsf-meta" style="text-align:center;margin-bottom:8px;">千帆右侧还有 ${orderCardCount - cards.length} 单未加载运单号，请展开对应订单后再点 ↻</div>`;
-      }
-      for (const { pkg, fee } of cards) {
-        html += `<div class="qsf-card">`;
-        html += `<div class="qsf-no">${esc(pkg.expressNo)}</div>`;
-        if (cards.length > 1 && (pkg.orderId || (pkg.orderIds && pkg.orderIds.length))) {
-          const ids = mergeOrderIds(pkg.orderIds, pkg.orderId);
-          if (ids.length) html += `<div class="qsf-meta" style="margin-top:2px;">订单 ${esc(ids.join(' / '))}</div>`;
-        }
-        if (!fee.ok) {
-          html += `<div class="qsf-err">${esc(fee.error)}</div>`;
-        } else {
-          html += `<div class="qsf-total">${money(fee.totalFee)}</div>`;
-          html += renderFeeCardMeta(fee, pkg);
-          for (const line of fee.fees) {
-            html += `<div class="qsf-fee-line"><span>${esc(line.name)}${line.settlement ? ` (${line.settlement})` : ''}</span><span>${money(line.amount)}</span></div>`;
+      const cards = await Promise.all(sfPkgs.map(async (pkg) => {
+        if (sessionId !== refreshSession) return null;
+        if (isSfExpressNo(pkg.expressNo)) {
+          const ck = feeCacheKey(cfg, pkg.expressNo);
+          if (expressCache.has(ck) && !force) {
+            return { pkg, fee: sanitizeFeeForCache(expressCache.get(ck)) };
           }
         }
-        html += `</div>`;
-      }
-      html += `<div class="qsf-meta" style="text-align:center;margin-top:8px;">已更新 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} · v${VERSION}</div>`;
-      bodyEl.innerHTML = html;
+        const fee = isSfExpressNo(pkg.expressNo)
+          ? await querySfWaybillFee(pkg.expressNo, cfg)
+          : makeNonSfFeeResult(pkg.expressNo);
+        return { pkg, fee: sanitizeFeeForCache(fee) };
+      }));
+      if (sessionId !== refreshSession) return;
+      const validCards = cards.filter(Boolean);
+
+      const updatedAt = Date.now();
+      saveBuyerPanelCache(buyerUserId, {
+        buyerNick,
+        updatedAt,
+        cfgKey: panelConfigCacheKey(cfg),
+        visibleOrderIds: getVisibleOrderPackageIds(),
+        cards: validCards,
+      });
+      bodyEl.innerHTML = renderPanelCards(buyerNick, buyerUserId, validCards, updatedAt, { fromCache: false });
     } finally {
       if (sessionId === refreshSession) {
         refreshInFlight = false;
@@ -1452,19 +2074,36 @@
   }
 
   let activateTimer = null;
+  let buyerRefreshTimer = null;
+  let lastActivatedBuyerId = '';
 
   function onBuyerActivated(appCid, buyerNick) {
     const buyerUserId = uidFromAppCid(appCid);
     if (!buyerUserId) return;
+    const buyerChanged = buyerUserId !== lastActivatedBuyerId;
+    lastActivatedBuyerId = buyerUserId;
+    orderPanelStale = buyerChanged ? true : orderPanelStale;
     activeBuyer = { buyerUserId, buyerNick: buyerNick || activeBuyer.buyerNick, appCid };
     buildPanel();
-    if (isPanelExpanded()) void refreshPanel({ waitForData: true });
+    if (!isPanelExpanded()) return;
+
+    if (!buyerChanged && !orderPanelStale && loadBuyerPanelCache(buyerUserId, loadConfig())) {
+      return;
+    }
+
+    clearTimeout(buyerRefreshTimer);
+    buyerRefreshTimer = setTimeout(() => {
+      void refreshPanel({ preferCache: true });
+    }, buyerChanged ? 150 : 80);
   }
 
   function scheduleActivateChatItem(item) {
     if (!item) return;
+    const appCid = getAppCidFromEl(item);
+    const buyerUserId = uidFromAppCid(appCid);
+    if (buyerUserId && buyerUserId === activeBuyer.buyerUserId && !orderPanelStale) return;
     clearTimeout(activateTimer);
-    activateTimer = setTimeout(() => onBuyerActivated(getAppCidFromEl(item), nickFromChatItem(item)), 380);
+    activateTimer = setTimeout(() => onBuyerActivated(appCid, nickFromChatItem(item)), 120);
   }
 
   function activateChatItem(item) {
@@ -1494,7 +2133,7 @@
     window.__qfSfChatClickHandler = (ev) => {
       const item = findChatItem(ev.target);
       if (!item) return;
-      setTimeout(() => scheduleActivateChatItem(item), 300);
+      scheduleActivateChatItem(item);
     };
     document.addEventListener('click', window.__qfSfChatClickHandler, true);
   }
@@ -1508,14 +2147,13 @@
         const el = m.target;
         if (!el?.classList?.contains('chat-item')) continue;
         if (el.classList.contains('active')) {
-          setTimeout(() => scheduleActivateChatItem(el), 200);
+          scheduleActivateChatItem(el);
         }
       }
+      if (!panelEl?.classList.contains('qsf-expanded')) return;
       clearTimeout(traceTimer);
       traceTimer = setTimeout(() => {
-        if (activeBuyer.buyerUserId && panelEl?.classList.contains('qsf-expanded')) {
-          patchTraceDisplay();
-        }
+        if (activeBuyer.buyerUserId) patchTraceDisplay();
       }, 1000);
     });
     obs.observe(document.body, {
@@ -1542,6 +2180,7 @@
     } catch {
       expressCache.clear();
     }
+    ensureBuyerCacheVersion();
     hookFetch();
     hookXhr();
     buildPanel();
@@ -1555,7 +2194,7 @@
       const uiVer = sessionStorage.getItem('qsf_fee_ui_ver');
       sessionStorage.setItem('qsf_fee_ui_ver', VERSION);
       if (uiVer && uiVer !== VERSION && panelEl?.classList.contains('qsf-expanded')) {
-        setTimeout(() => void refreshPanel({ force: true }), 300);
+        setTimeout(() => void refreshPanel({ preferCache: true }), 300);
       }
     } catch {
       /* ignore */
@@ -1568,7 +2207,10 @@
       teardown: teardownPanel,
       clearCache: () => {
         expressCache.clear();
+        sfFeeInflight.clear();
         buyerPackages.clear();
+        buyerPackageById.clear();
+        clearBuyerPanelCache();
       },
     };
 
