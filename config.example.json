@@ -1,0 +1,12 @@
+{
+  "devtoolsHost": "127.0.0.1",
+  "devtoolsPort": null,
+  "pollIntervalMs": 2500,
+  "sf": {
+    "partnerID": "",
+    "checkWord": "",
+    "checkWordSandbox": "",
+    "phoneLast4": "",
+    "sandbox": false
+  }
+}
