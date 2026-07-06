@@ -4,7 +4,7 @@
  * 丰桥凭证：config.json → sf.partnerID / sf.checkWord（或侧栏 ⚙ 一次）
  */
 (function qfSfFeePanelBootstrap() {
-  const VERSION = '1.0.20';
+  const VERSION = '1.0.22';
   const ICON_POS_KEY = 'qsf_icon_pos_v1';
   const STORAGE_KEY = 'qf_sf_fee_config_v1';
   const SF_PROD = 'https://sfapi.sf-express.com/std/service';
@@ -37,11 +37,15 @@
   if (window.__qfSfFeePanel?.version === VERSION) {
     console.log('[顺丰运费] 已加载，版本', window.__qfSfFeePanel.version);
     qsfEnsureFooter();
-    const root = document.getElementById(PANEL_ID);
-    if (root?.classList.contains('qsf-expanded') && typeof window.__qfSfFeePanel.refresh === 'function') {
-      void window.__qfSfFeePanel.refresh({ force: true });
+    if (!document.getElementById(PANEL_ID)) {
+      delete window.__qfSfFeePanel;
+    } else {
+      const root = document.getElementById(PANEL_ID);
+      if (root?.classList.contains('qsf-expanded') && typeof window.__qfSfFeePanel.refresh === 'function') {
+        void window.__qfSfFeePanel.refresh({ force: true });
+      }
+      return;
     }
-    return;
   }
   if (window.__qfSfFeePanel) {
     try {
@@ -441,11 +445,12 @@
     const weight = formatWeightPair(fee.realWeightQty, fee.meterageWeightQty);
     const acct = fee.customerAcctCode ? `月结 ${fee.customerAcctCode}` : '';
     const orderId = String(pkg.orderId || '').trim();
+    const orderIds = mergeOrderIds(pkg.orderIds, orderId);
     const childs = String(fee.waybillChilds || '').trim();
     const line2 = [
       weight,
       acct,
-      orderId ? `订单 ${orderId}` : '',
+      orderIds.length ? `订单 ${orderIds.join(' / ')}` : '',
       childs ? `子单 ${childs}` : '',
     ].filter(Boolean).join(' · ');
     if (line2) {
@@ -479,11 +484,7 @@
       || null;
   }
 
-  function scrapeLogisticsFromPanel() {
-    const root = orderPanelRoot();
-    if (!root) return '';
-    const box = root.querySelector('.logistics-box')
-      || root.querySelector('.delivery-row-logistics');
+  function scrapeLogisticsFromBox(box) {
     if (!box) return '';
     const parts = (box.innerText || '')
       .split(/\n|\s*[|｜]\s*/)
@@ -504,6 +505,24 @@
       }
     }
     return '';
+  }
+
+  function scrapeLogisticsFromPanel() {
+    const root = orderPanelRoot();
+    if (!root) return '';
+    const box = root.querySelector('.logistics-box')
+      || root.querySelector('.delivery-row-logistics');
+    return scrapeLogisticsFromBox(box);
+  }
+
+  function mergeOrderIds(...sources) {
+    const ids = new Set();
+    for (const src of sources) {
+      if (!src) continue;
+      if (Array.isArray(src)) src.forEach((id) => { if (id) ids.add(String(id).trim()); });
+      else String(src).split(/[,，]/).forEach((id) => { if (id.trim()) ids.add(id.trim()); });
+    }
+    return [...ids];
   }
 
   function resolveBuyerTrace(buyerUserId) {
@@ -529,10 +548,13 @@
     if (!uid || !no) return;
     if (!buyerPackages.has(uid)) buyerPackages.set(uid, new Map());
     const prev = buyerPackages.get(uid).get(no) || {};
+    const orderIds = mergeOrderIds(prev.orderIds, prev.orderId, pkg.orderId, pkg.orderIds);
     buyerPackages.get(uid).set(no, {
       ...prev,
       ...pkg,
       expressNo: no,
+      orderId: orderIds[0] || prev.orderId || pkg.orderId || '',
+      orderIds,
       lastTrace: pkg.lastTrace ? pkg.lastTrace : (prev.lastTrace || ''),
     });
   }
@@ -694,38 +716,60 @@
     });
   }
 
+  function scrapeOrderCardsFromPanel() {
+    const root = orderPanelRoot();
+    if (!root) return [];
+    const primaryNo = scrapeLogisticsExpressNo();
+    const found = new Map();
+    const cards = root.querySelectorAll('.order-card');
+    cards.forEach((card) => {
+      const orderId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+      const logistics = card.querySelector('.delivery-row-logistics, .logistics-box');
+      const text = card.innerText || '';
+      const sfMatch = text.match(/\b(SF\d{10,15})\b/i);
+      if (!sfMatch) return;
+      const no = sfMatch[1].toUpperCase();
+      if (!isSfExpressNo(no, '顺丰')) return;
+      const trace = scrapeLogisticsFromBox(logistics);
+      const prev = found.get(no) || { expressNo: no, expressCompany: '顺丰', orderIds: [] };
+      if (orderId) prev.orderIds = mergeOrderIds(prev.orderIds, orderId);
+      if (trace) prev.lastTrace = trace;
+      prev.primary = no === primaryNo;
+      found.set(no, prev);
+    });
+    return sortSfPackages([...found.values()].map((p) => ({
+      ...p,
+      orderId: (p.orderIds && p.orderIds[0]) || p.orderId || '',
+    })));
+  }
+
   function scrapeDomExpress() {
     const root = orderPanelRoot();
     const found = new Map();
-    const domTrace = scrapeLogisticsFromPanel() || scrapeDomTrace(root);
     const primaryNo = scrapeLogisticsExpressNo();
 
     const addNo = (no, extra = {}) => {
       const upper = String(no || '').trim().toUpperCase();
       if (!isSfExpressNo(upper, '顺丰')) return;
+      const prev = found.get(upper) || {};
       found.set(upper, {
         expressNo: upper,
         expressCompany: '顺丰',
-        orderId: '',
-        packageId: '',
+        orderId: prev.orderId || extra.orderId || '',
+        orderIds: mergeOrderIds(prev.orderIds, extra.orderIds, extra.orderId),
+        packageId: extra.packageId || prev.packageId || '',
         primary: upper === primaryNo,
-        ...(domTrace ? { lastTrace: domTrace } : {}),
+        lastTrace: extra.lastTrace || prev.lastTrace || '',
         ...extra,
+        expressNo: upper,
       });
     };
 
-    if (primaryNo) addNo(primaryNo);
+    for (const pkg of scrapeOrderCardsFromPanel()) addNo(pkg.expressNo, pkg);
+
+    if (primaryNo) addNo(primaryNo, { lastTrace: scrapeLogisticsFromPanel() });
 
     if (root) {
-      const box = root.querySelector('.logistics-box') || root.querySelector('.delivery-row-logistics');
-      const scope = box?.closest('[class*="order"],[class*="package"],[class*="detail"]') || box || root;
-      const text = (scope.innerText || '').slice(0, 4000);
-      const re = /\b(SF\d{10,15})\b/gi;
-      let m;
-      while ((m = re.exec(text))) addNo(m[1]);
-    }
-
-    if (!found.size && root) {
       const re = /\b(SF\d{10,15})\b/gi;
       let m;
       const text = root.innerText || '';
@@ -745,22 +789,16 @@
     return '';
   }
 
-  function packagesForBuyer(buyerUserId) {
+  function collectAllPackages(buyerUserId) {
     const uid = String(buyerUserId || '').trim();
-    const primaryNo = scrapeLogisticsExpressNo();
-    if (primaryNo && uid) {
-      indexPackage(uid, {
-        expressNo: primaryNo,
-        expressCompany: '顺丰',
-        primary: true,
-        ...(scrapeLogisticsFromPanel() ? { lastTrace: scrapeLogisticsFromPanel() } : {}),
-      });
-    }
-    const fromCache = uid && buyerPackages.has(uid) ? [...buyerPackages.get(uid).values()] : [];
-    const sfOnly = sortSfPackages(fromCache.filter((p) => isSfExpressNo(p.expressNo, p.expressCompany)));
-    if (sfOnly.length) return sfOnly;
-    if (!orderPanelRoot()) return [];
-    return scrapeDomExpress();
+    if (!uid) return [];
+    scrapeDomExpress();
+    const fromCache = buyerPackages.has(uid) ? [...buyerPackages.get(uid).values()] : [];
+    return sortSfPackages(fromCache.filter((p) => isSfExpressNo(p.expressNo, p.expressCompany)));
+  }
+
+  function packagesForBuyer(buyerUserId) {
+    return collectAllPackages(buyerUserId);
   }
 
   // ─── 顺丰清单运费 ───────────────────────────────────────────────────
@@ -915,18 +953,24 @@
     return packagesForBuyer(buyerUserId).filter((p) => isSfExpressNo(p.expressNo, p.expressCompany));
   }
 
-  async function waitForSfPackages(buyerUserId, sessionId, maxMs = 5000, intervalMs = 400) {
+  async function waitForSfPackages(buyerUserId, sessionId, maxMs = 8000, intervalMs = 400) {
     const deadline = Date.now() + maxMs;
+    let best = [];
+    let stableRounds = 0;
+    let prevLen = 0;
     while (Date.now() < deadline) {
       if (sessionId !== refreshSession) return null;
-      scrapeDomExpress();
-      const sfPkgs = sfPackagesForBuyer(buyerUserId);
-      if (sfPkgs.length) return sfPkgs;
+      const sfPkgs = collectAllPackages(buyerUserId);
+      if (sfPkgs.length > best.length) best = sfPkgs;
+      if (sfPkgs.length > 0 && sfPkgs.length === prevLen) stableRounds += 1;
+      else stableRounds = 0;
+      prevLen = sfPkgs.length;
+      if (sfPkgs.length && stableRounds >= 2) break;
       await sleep(intervalMs);
     }
     if (sessionId !== refreshSession) return null;
-    scrapeDomExpress();
-    return sfPackagesForBuyer(buyerUserId);
+    const finalPkgs = collectAllPackages(buyerUserId);
+    return finalPkgs.length ? finalPkgs : best;
   }
 
   function setRefreshLoading(on) {
@@ -1001,8 +1045,29 @@
       panelEl.style.top = `${top}px`;
       panelEl.style.right = 'auto';
       panelEl.style.bottom = 'auto';
-      return;
+    } else {
+      panelEl.style.top = '48px';
+      panelEl.style.right = '8px';
+      panelEl.style.left = 'auto';
+      panelEl.style.bottom = 'auto';
     }
+    ensureIconInViewport();
+  }
+
+  function ensureIconInViewport() {
+    if (!panelEl || !panelEl.classList.contains('qsf-icon-only')) return;
+    const rect = panelEl.getBoundingClientRect();
+    const offScreen = rect.width < 1 || rect.height < 1
+      || rect.right < 4 || rect.bottom < 4
+      || rect.left > window.innerWidth - 4
+      || rect.top > window.innerHeight - 4;
+    if (!offScreen) return;
+    try {
+      localStorage.removeItem(ICON_POS_KEY);
+    } catch {
+      /* ignore */
+    }
+    clearIconInlinePos();
     panelEl.style.top = '48px';
     panelEl.style.right = '8px';
     panelEl.style.left = 'auto';
@@ -1134,6 +1199,10 @@
       #${PANEL_ID} .qsf-meta { color: #6b7280; font-size: 11px; margin-top: 4px; line-height: 1.45; }
       #${PANEL_ID} .qsf-meta-warn { color: #b45309; }
       #${PANEL_ID} .qsf-total { font-size: 18px; font-weight: 700; color: #dc2626; margin: 6px 0; }
+      #${PANEL_ID} .qsf-summary {
+        margin-bottom: 10px; padding: 8px 10px; background: #fef2f2; border-radius: 8px;
+        color: #991b1b; font-size: 12px; font-weight: 600; text-align: center;
+      }
       #${PANEL_ID} .qsf-fee-line { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; }
       #${PANEL_ID} .qsf-err { color: #dc2626; font-size: 12px; }
       #${PANEL_ID} .qsf-empty { color: #9ca3af; text-align: center; padding: 24px 8px; line-height: 1.6; }
@@ -1296,13 +1365,13 @@
 
       if (force) {
         syncActiveBuyerFromDom();
-        scrapeDomExpress();
+        collectAllPackages(buyerUserId);
       }
 
       if (sessionId !== refreshSession) return;
       bodyEl.innerHTML = renderLoadingPanel(
         buyerNick,
-        waitForData ? '正在同步该买家运单…' : '正在刷新顺丰运单与月结费用…',
+        waitForData ? '正在同步该买家全部运单…' : '正在刷新全部顺丰运单与月结费用…',
         buyerUserId,
       );
 
@@ -1310,8 +1379,7 @@
       if (waitForData) {
         sfPkgs = await waitForSfPackages(buyerUserId, sessionId);
       } else {
-        scrapeDomExpress();
-        sfPkgs = sfPackagesForBuyer(buyerUserId);
+        sfPkgs = collectAllPackages(buyerUserId);
       }
       if (sessionId !== refreshSession) return;
 
@@ -1346,9 +1414,22 @@
       });
 
       let html = renderBuyerHeader(buyerNick, buyerUserId);
+      const orderCardCount = orderPanelRoot()?.querySelectorAll('.order-card').length || 0;
+      const okCards = cards.filter((c) => c.fee.ok);
+      if (cards.length > 1) {
+        const sum = okCards.reduce((s, c) => s + (Number(c.fee.totalFee) || 0), 0);
+        html += `<div class="qsf-summary">共 ${cards.length} 个运单 · 可计费 ${okCards.length} 单 · 合计 ${money(sum)}</div>`;
+      }
+      if (orderCardCount > cards.length && orderCardCount > 1) {
+        html += `<div class="qsf-meta" style="text-align:center;margin-bottom:8px;">千帆右侧还有 ${orderCardCount - cards.length} 单未加载运单号，请展开对应订单后再点 ↻</div>`;
+      }
       for (const { pkg, fee } of cards) {
         html += `<div class="qsf-card">`;
         html += `<div class="qsf-no">${esc(pkg.expressNo)}</div>`;
+        if (cards.length > 1 && (pkg.orderId || (pkg.orderIds && pkg.orderIds.length))) {
+          const ids = mergeOrderIds(pkg.orderIds, pkg.orderId);
+          if (ids.length) html += `<div class="qsf-meta" style="margin-top:2px;">订单 ${esc(ids.join(' / '))}</div>`;
+        }
         if (!fee.ok) {
           html += `<div class="qsf-err">${esc(fee.error)}</div>`;
         } else {
@@ -1445,42 +1526,75 @@
     window.__qfSfFeeChatObs = obs;
   }
 
-  // ─── 启动 ───────────────────────────────────────────────────────────
-  try {
-    if (sessionStorage.getItem('qsf_fee_cache_ver') !== VERSION) {
-      expressCache.clear();
-      sessionStorage.setItem('qsf_fee_cache_ver', VERSION);
+  // ─── 启动（等待 body 就绪，避免刷新后注入失败）────────────────────
+  function startPanel() {
+    if (!document.body) return;
+    if (window.__qfSfFeePanel?.version === VERSION && document.getElementById(PANEL_ID)) {
+      buildPanel();
+      ensureIconInViewport();
+      return;
     }
-  } catch {
-    expressCache.clear();
-  }
-  hookFetch();
-  hookXhr();
-  buildPanel();
-  bindClickListener();
-  bindActiveChatObserver();
-  setTimeout(syncActiveChatItem, 600);
-
-  try {
-    const uiVer = sessionStorage.getItem('qsf_fee_ui_ver');
-    sessionStorage.setItem('qsf_fee_ui_ver', VERSION);
-    if (uiVer && uiVer !== VERSION && panelEl?.classList.contains('qsf-expanded')) {
-      setTimeout(() => void refreshPanel({ force: true }), 300);
-    }
-  } catch {
-    /* ignore */
-  }
-
-  window.__qfSfFeePanel = {
-    version: VERSION,
-    refresh: refreshPanel,
-    setBuyer: onBuyerActivated,
-    teardown: teardownPanel,
-    clearCache: () => {
+    try {
+      if (sessionStorage.getItem('qsf_fee_cache_ver') !== VERSION) {
+        expressCache.clear();
+        sessionStorage.setItem('qsf_fee_cache_ver', VERSION);
+      }
+    } catch {
       expressCache.clear();
-      buyerPackages.clear();
-    },
-  };
+    }
+    hookFetch();
+    hookXhr();
+    buildPanel();
+    bindClickListener();
+    bindActiveChatObserver();
+    ensureIconInViewport();
+    window.addEventListener('resize', ensureIconInViewport);
+    setTimeout(syncActiveChatItem, 600);
 
-  console.log(`[顺丰运费] 侧栏 v${VERSION} 已注入。配置：侧栏 ⚙ → 填入丰桥 partnerID / checkWord`);
+    try {
+      const uiVer = sessionStorage.getItem('qsf_fee_ui_ver');
+      sessionStorage.setItem('qsf_fee_ui_ver', VERSION);
+      if (uiVer && uiVer !== VERSION && panelEl?.classList.contains('qsf-expanded')) {
+        setTimeout(() => void refreshPanel({ force: true }), 300);
+      }
+    } catch {
+      /* ignore */
+    }
+
+    window.__qfSfFeePanel = {
+      version: VERSION,
+      refresh: refreshPanel,
+      setBuyer: onBuyerActivated,
+      teardown: teardownPanel,
+      clearCache: () => {
+        expressCache.clear();
+        buyerPackages.clear();
+      },
+    };
+
+    console.log(`[顺丰运费] 侧栏 v${VERSION} 已注入。配置：侧栏 ⚙ → 填入丰桥 partnerID / checkWord`);
+  }
+
+  function bootPanel() {
+    if (document.body) {
+      startPanel();
+      return;
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startPanel, { once: true });
+      return;
+    }
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries += 1;
+      if (document.body) {
+        clearInterval(timer);
+        startPanel();
+      } else if (tries >= 200) {
+        clearInterval(timer);
+      }
+    }, 50);
+  }
+
+  bootPanel();
 })();

@@ -140,8 +140,10 @@ async function main() {
 
   const injected = new Map();
   let devtoolsUp = false;
+  let nextPollMs = config.pollIntervalMs;
 
   for (;;) {
+    let needFastPoll = false;
     try {
       const currentPanelJs = fs.readFileSync(PANEL_SCRIPT_PATH, 'utf8');
       const currentVersion = currentPanelJs.match(/const VERSION = '([^']+)'/)?.[1] || '';
@@ -201,13 +203,15 @@ async function main() {
         }
 
         if (!needInject) continue;
+        needFastPoll = true;
 
         try {
           await injectToPage(page, injectSource, prev);
-          injected.set(ws, { ok: true, fails: 0, title: page.title, scriptRegistered: true });
+          injected.set(ws, { ok: true, fails: 0, title: page.title, scriptRegistered: true, url: page.url });
         } catch (err) {
           const fails = (prev.fails || 0) + 1;
-          injected.set(ws, { at: Date.now(), ok: false, fails, title: page.title });
+          injected.set(ws, { at: Date.now(), ok: false, fails, title: page.title, url: page.url });
+          needFastPoll = true;
           if (fails <= 2) log(`注入失败 (${page.title || 'page'}): ${err.message || err}`);
         }
       }
@@ -217,9 +221,11 @@ async function main() {
         devtoolsUp = false;
         injected.clear();
       }
+      needFastPoll = true;
     }
 
-    await new Promise((r) => setTimeout(r, config.pollIntervalMs));
+    nextPollMs = needFastPoll ? 800 : config.pollIntervalMs;
+    await new Promise((r) => setTimeout(r, nextPollMs));
   }
 }
 
