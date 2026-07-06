@@ -4,18 +4,48 @@
  * 丰桥凭证：config.json → sf.partnerID / sf.checkWord（或侧栏 ⚙ 一次）
  */
 (function qfSfFeePanelBootstrap() {
-  const VERSION = '1.0.9';
+  const VERSION = '1.0.20';
+  const ICON_POS_KEY = 'qsf_icon_pos_v1';
   const STORAGE_KEY = 'qf_sf_fee_config_v1';
   const SF_PROD = 'https://sfapi.sf-express.com/std/service';
   const SF_SBOX = 'https://sfapi-sbox.sf-express.com/std/service';
   const PANEL_ID = 'qf-sf-fee-panel-root';
 
+  function qsfEnsureFooter() {
+    try {
+      const root = document.getElementById(PANEL_ID);
+      const shell = root?.querySelector('.qsf-shell');
+      if (!shell) return;
+      let foot = shell.querySelector(':scope > .qsf-foot');
+      if (!foot) {
+        foot = document.createElement('div');
+        foot.className = 'qsf-foot';
+        shell.appendChild(foot);
+      }
+      let ver = foot.querySelector('.qsf-ver');
+      if (!ver) {
+        ver = document.createElement('span');
+        ver.className = 'qsf-ver';
+        foot.appendChild(ver);
+      }
+      ver.textContent = `v${VERSION}`;
+    } catch {
+      /* ignore */
+    }
+  }
+
   if (window.__qfSfFeePanel?.version === VERSION) {
     console.log('[顺丰运费] 已加载，版本', window.__qfSfFeePanel.version);
+    qsfEnsureFooter();
+    const root = document.getElementById(PANEL_ID);
+    if (root?.classList.contains('qsf-expanded') && typeof window.__qfSfFeePanel.refresh === 'function') {
+      void window.__qfSfFeePanel.refresh({ force: true });
+    }
     return;
   }
   if (window.__qfSfFeePanel) {
     try {
+      window.__qfSfFeePanel.teardown?.();
       document.getElementById(PANEL_ID)?.remove();
       document.getElementById('qf-sf-fee-panel-style')?.remove();
     } catch {
@@ -24,6 +54,25 @@
     delete window.__qfSfFeePanel;
     delete window.__qfSfFeeFetchHooked;
     delete window.__qfSfFeeXhrHooked;
+  }
+
+  function teardownPanel() {
+    try {
+      if (window.__qfSfChatClickHandler) {
+        document.removeEventListener('click', window.__qfSfChatClickHandler, true);
+        delete window.__qfSfChatClickHandler;
+      }
+      if (window.__qfSfFeeChatObs) {
+        window.__qfSfFeeChatObs.disconnect();
+        delete window.__qfSfFeeChatObs;
+      }
+      if (window.__qfSfLauncherDragCleanup) {
+        window.__qfSfLauncherDragCleanup();
+        delete window.__qfSfLauncherDragCleanup;
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   // ─── MD5（丰桥 msgDigest） ─────────────────────────────────────────
@@ -294,7 +343,8 @@
       node.logistics_status_desc, node.logisticsStatusDesc, node.track_desc, node.trackDesc,
       node.trace_desc, node.traceDesc, node.status_desc, node.statusDesc,
       node.logistics_latest_desc, node.logisticsLatestDesc,
-    ].find((v) => typeof v === 'string' && v.trim());
+      node.csstatus, node.erp_status_str, node.status_name, node.ship_time_format,
+    ].find((v) => typeof v === 'string' && v.trim() && !isInternalId(v));
     if (direct) return direct.trim();
     const lists = [
       node.trace_list, node.traceList, node.traces, node.route_list, node.routeList,
@@ -343,6 +393,70 @@
     return Number.isFinite(v) ? `¥${v.toFixed(2)}` : '-';
   }
 
+  const SF_EXPRESS_LABELS = {
+    B1: '顺丰标快',
+    S1: '顺丰特惠',
+    T1: '顺丰次晨',
+    T4: '顺丰特快',
+    T6: '顺丰即日',
+    T8: '顺丰次晨',
+    T11: '物流普运',
+    T12: '顺丰空配',
+  };
+
+  function sfExpressTypeLabel(code) {
+    const c = String(code || '').trim().toUpperCase();
+    return SF_EXPRESS_LABELS[c] || (c ? `产品 ${c}` : '');
+  }
+
+  function formatRoute(fee) {
+    const from = String(fee.jCity || fee.jProvince || '').trim();
+    const to = String(fee.dCity || fee.dProvince || '').trim();
+    if (from && to) return `${from} → ${to}`;
+    return from || to || '';
+  }
+
+  function formatWeightPair(real, meterage) {
+    const r = Number(real);
+    const m = Number(meterage);
+    const rOk = Number.isFinite(r);
+    const mOk = Number.isFinite(m);
+    if (rOk && mOk) {
+      if (r !== m) return `实重 ${r} kg · 计费 ${m} kg`;
+      return `实重/计费 ${m} kg`;
+    }
+    if (mOk) return `计费 ${m} kg`;
+    if (rOk) return `实重 ${r} kg`;
+    return '';
+  }
+
+  function renderFeeCardMeta(fee, pkg) {
+    let html = '';
+    const route = formatRoute(fee);
+    const product = sfExpressTypeLabel(fee.expressTypeCode);
+    const recipient = String(fee.addresseeContName || '').trim();
+    const line1 = [recipient, route, product].filter(Boolean).join(' · ');
+    if (line1) html += `<div class="qsf-meta">${esc(line1)}</div>`;
+
+    const weight = formatWeightPair(fee.realWeightQty, fee.meterageWeightQty);
+    const acct = fee.customerAcctCode ? `月结 ${fee.customerAcctCode}` : '';
+    const orderId = String(pkg.orderId || '').trim();
+    const childs = String(fee.waybillChilds || '').trim();
+    const line2 = [
+      weight,
+      acct,
+      orderId ? `订单 ${orderId}` : '',
+      childs ? `子单 ${childs}` : '',
+    ].filter(Boolean).join(' · ');
+    if (line2) {
+      const warn = Number.isFinite(Number(fee.realWeightQty))
+        && Number.isFinite(Number(fee.meterageWeightQty))
+        && Number(fee.realWeightQty) !== Number(fee.meterageWeightQty);
+      html += `<div class="qsf-meta${warn ? ' qsf-meta-warn' : ''}">${esc(line2)}</div>`;
+    }
+    return html;
+  }
+
   function uuid() {
     return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
       const r = (Math.random() * 16) | 0;
@@ -354,6 +468,60 @@
   const buyerPackages = new Map(); // buyerUserId -> Map(expressNo -> pkg)
   const expressCache = new Map(); // expressNo -> sf fee result
   let activeBuyer = { buyerUserId: '', buyerNick: '', appCid: '' };
+  let refreshInFlight = false;
+  let refreshSession = 0;
+
+  function orderPanelRoot() {
+    return document.querySelector('.order-tool-content')
+      || document.querySelector('.new-right-panel')
+      || document.querySelector('.order-tool-container')
+      || document.querySelector('.farmer-chat__right')
+      || null;
+  }
+
+  function scrapeLogisticsFromPanel() {
+    const root = orderPanelRoot();
+    if (!root) return '';
+    const box = root.querySelector('.logistics-box')
+      || root.querySelector('.delivery-row-logistics');
+    if (!box) return '';
+    const parts = (box.innerText || '')
+      .split(/\n|\s*[|｜]\s*/)
+      .map((l) => l.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const line = parts[i];
+      if (line.length < 4 || isInternalId(line)) continue;
+      if (/^SF\d/i.test(line) || /顺丰速运/.test(line)) continue;
+      if (/^\d{4}[-/]\d{2}[-/]\d{2}/.test(line)) continue;
+      if (/^(运输中|已签收|待揽收|派件中|已发货|待发货)$/.test(line)) continue;
+      if (/快件|签收|派送|揽收|离开|到达|配送|发往|转运|投递|签收/.test(line)) return line;
+    }
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const line = parts[i];
+      if (line.length >= 2 && !/^SF\d/i.test(line) && !/顺丰速运/.test(line) && !isInternalId(line)) {
+        return line;
+      }
+    }
+    return '';
+  }
+
+  function resolveBuyerTrace(buyerUserId) {
+    const domTrace = scrapeLogisticsFromPanel();
+    if (domTrace) {
+      if (buyerUserId && activeBuyer.buyerUserId === buyerUserId) {
+        const pkgs = buyerPackages.get(buyerUserId);
+        if (pkgs) {
+          for (const pkg of pkgs.values()) {
+            indexPackage(buyerUserId, { ...pkg, lastTrace: domTrace });
+            break;
+          }
+        }
+      }
+      return domTrace;
+    }
+    return latestTraceForBuyer(buyerUserId);
+  }
 
   function indexPackage(buyerUserId, pkg) {
     const uid = String(buyerUserId || '').trim();
@@ -393,19 +561,41 @@
 
   let ingestRefreshTimer = null;
 
-  function scheduleIngestRefresh() {
+  function scheduleIngestRefresh(reason) {
     if (!activeBuyer.buyerUserId || refreshInFlight) return;
+    if (reason === 'traceOnly') {
+      if (isPanelExpanded()) patchTraceDisplay();
+      return;
+    }
+    if (!isPanelExpanded()) return;
     clearTimeout(ingestRefreshTimer);
     ingestRefreshTimer = setTimeout(() => {
-      if (!refreshInFlight && activeBuyer.buyerUserId) {
+      if (!refreshInFlight && activeBuyer.buyerUserId && isPanelExpanded()) {
         void refreshPanel({ waitForData: false });
       }
-    }, 800);
+    }, 1200);
+  }
+
+  function patchTraceDisplay() {
+    if (!bodyEl || !activeBuyer.buyerUserId) return;
+    const trace = resolveBuyerTrace(activeBuyer.buyerUserId);
+    if (!trace) return;
+    const header = bodyEl.querySelector('.qsf-buyer');
+    if (header) {
+      let el = header.querySelector('.qsf-buyer-trace');
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'qsf-buyer-trace';
+        header.appendChild(el);
+      }
+      if (el.textContent !== trace) el.textContent = trace;
+    }
+    bodyEl.querySelectorAll('.qsf-card .qsf-trace').forEach((el) => el.remove());
   }
 
   function ingestJsonBody(json) {
     if (!json || typeof json !== 'object') return;
-    let touched = false;
+    let refreshReason = null;
     walkJson(json, (node) => {
       const buyerUserId = String(node.buyer_user_id || node.buyerUserId || '').trim();
       const expressNo = String(
@@ -416,26 +606,28 @@
       const packageId = String(node.package_id || node.packageId || '').trim();
       const lastTrace = pickTraceText(node);
       const pkgBase = { expressCompany, orderId, packageId, ...(lastTrace ? { lastTrace } : {}) };
+      const isActive = buyerUserId === activeBuyer.buyerUserId
+        || (!buyerUserId && expressNo && activeBuyer.buyerUserId);
       if (buyerUserId && expressNo) {
+        const prev = buyerPackages.get(buyerUserId)?.get(expressNo);
         indexPackage(buyerUserId, { ...pkgBase, expressNo });
-        if (buyerUserId === activeBuyer.buyerUserId) touched = true;
-      } else if (expressNo && isSfExpressNo(expressNo, expressCompany)) {
-        if (activeBuyer.buyerUserId) {
-          indexPackage(activeBuyer.buyerUserId, { ...pkgBase, expressNo });
-          touched = true;
-        }
+        if (isActive) refreshReason = prev ? 'traceOnly' : 'newExpress';
+      } else if (expressNo && isSfExpressNo(expressNo, expressCompany) && activeBuyer.buyerUserId) {
+        const prev = buyerPackages.get(activeBuyer.buyerUserId)?.get(expressNo);
+        indexPackage(activeBuyer.buyerUserId, { ...pkgBase, expressNo });
+        refreshReason = prev ? 'traceOnly' : 'newExpress';
       } else if (lastTrace && buyerUserId) {
         const pkgs = buyerPackages.get(buyerUserId);
         if (pkgs && pkgs.size === 1) {
           const only = [...pkgs.values()][0];
           if (only) {
             indexPackage(buyerUserId, { ...only, lastTrace });
-            if (buyerUserId === activeBuyer.buyerUserId) touched = true;
+            if (buyerUserId === activeBuyer.buyerUserId) refreshReason = 'traceOnly';
           }
         }
       }
     });
-    if (touched) scheduleIngestRefresh();
+    if (refreshReason) scheduleIngestRefresh(refreshReason);
   }
 
   function hookFetch() {
@@ -483,63 +675,89 @@
     };
   }
 
-  function orderPanelRoot() {
-    const selectors = [
-      '[class*="order-detail"]', '[class*="orderDetail"]', '[class*="OrderDetail"]',
-      '[class*="package-list"]', '[class*="packageList"]', '[class*="PackageList"]',
-      '[class*="right-content"]', '[class*="rightContent"]', '[class*="RightContent"]',
-      '[class*="order-panel"]', '[class*="OrderPanel"]',
-    ];
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el) return el;
-    }
-    return null;
+  function scrapeLogisticsExpressNo() {
+    const root = orderPanelRoot();
+    if (!root) return '';
+    const box = root.querySelector('.logistics-box') || root.querySelector('.delivery-row-logistics');
+    if (!box) return '';
+    const m = (box.innerText || '').match(/\b(SF\d{10,15})\b/i);
+    return m ? m[1].toUpperCase() : '';
   }
 
-  function scrapeDomTrace(root) {
-    if (!root) return '';
-    const selectors = [
-      '[class*="logistics"]', '[class*="trace"]', '[class*="express-track"]',
-      '[class*="Logistics"]', '[class*="Trace"]',
-    ];
-    for (const sel of selectors) {
-      const nodes = root.querySelectorAll(sel);
-      for (const node of nodes) {
-        const t = (node.textContent || '').replace(/\s+/g, ' ').trim();
-        if (t.length >= 4 && t.length <= 120 && !isInternalId(t)) return t;
-      }
-    }
-    return '';
+  function sortSfPackages(pkgs) {
+    return [...pkgs].sort((a, b) => {
+      if (a.primary && !b.primary) return -1;
+      if (!a.primary && b.primary) return 1;
+      if (a.orderId && !b.orderId) return -1;
+      if (!a.orderId && b.orderId) return 1;
+      return String(a.expressNo || '').localeCompare(String(b.expressNo || ''));
+    });
   }
 
   function scrapeDomExpress() {
     const root = orderPanelRoot();
     const found = new Map();
-    const domTrace = scrapeDomTrace(root);
-    const text = root ? root.innerText || '' : '';
-    const re = /\b(SF\d{10,15})\b/gi;
-    let m;
-    while ((m = re.exec(text))) {
-      const no = m[1].toUpperCase();
-      found.set(no, {
-        expressNo: no,
+    const domTrace = scrapeLogisticsFromPanel() || scrapeDomTrace(root);
+    const primaryNo = scrapeLogisticsExpressNo();
+
+    const addNo = (no, extra = {}) => {
+      const upper = String(no || '').trim().toUpperCase();
+      if (!isSfExpressNo(upper, '顺丰')) return;
+      found.set(upper, {
+        expressNo: upper,
         expressCompany: '顺丰',
         orderId: '',
         packageId: '',
+        primary: upper === primaryNo,
         ...(domTrace ? { lastTrace: domTrace } : {}),
+        ...extra,
       });
+    };
+
+    if (primaryNo) addNo(primaryNo);
+
+    if (root) {
+      const box = root.querySelector('.logistics-box') || root.querySelector('.delivery-row-logistics');
+      const scope = box?.closest('[class*="order"],[class*="package"],[class*="detail"]') || box || root;
+      const text = (scope.innerText || '').slice(0, 4000);
+      const re = /\b(SF\d{10,15})\b/gi;
+      let m;
+      while ((m = re.exec(text))) addNo(m[1]);
     }
+
+    if (!found.size && root) {
+      const re = /\b(SF\d{10,15})\b/gi;
+      let m;
+      const text = root.innerText || '';
+      while ((m = re.exec(text))) addNo(m[1]);
+    }
+
     if (activeBuyer.buyerUserId) {
       for (const pkg of found.values()) indexPackage(activeBuyer.buyerUserId, pkg);
     }
-    return [...found.values()];
+    return sortSfPackages([...found.values()]);
+  }
+
+  function scrapeDomTrace(root) {
+    if (!root) return '';
+    const box = root.querySelector('.logistics-box') || root.querySelector('.delivery-row-logistics');
+    if (box) return scrapeLogisticsFromPanel();
+    return '';
   }
 
   function packagesForBuyer(buyerUserId) {
     const uid = String(buyerUserId || '').trim();
+    const primaryNo = scrapeLogisticsExpressNo();
+    if (primaryNo && uid) {
+      indexPackage(uid, {
+        expressNo: primaryNo,
+        expressCompany: '顺丰',
+        primary: true,
+        ...(scrapeLogisticsFromPanel() ? { lastTrace: scrapeLogisticsFromPanel() } : {}),
+      });
+    }
     const fromCache = uid && buyerPackages.has(uid) ? [...buyerPackages.get(uid).values()] : [];
-    const sfOnly = fromCache.filter((p) => isSfExpressNo(p.expressNo, p.expressCompany));
+    const sfOnly = sortSfPackages(fromCache.filter((p) => isSfExpressNo(p.expressNo, p.expressCompany)));
     if (sfOnly.length) return sfOnly;
     if (!orderPanelRoot()) return [];
     return scrapeDomExpress();
@@ -624,6 +842,11 @@
           errMsg = '丰桥数字签名无效（A1006）。请核对顾客编码与校验码是否匹配当前环境（沙箱/生产）。';
         } else if (String(inner.errorCode || '') === '8152' || /月结卡号没有配置/.test(errMsg)) {
           errMsg = '月结卡号未在丰桥配置正确（8152）。请在丰桥应用里绑定你的顺丰月结账号后再查。';
+        } else if (String(inner.errorCode || '') === '8148' || /没有运单信息/.test(errMsg)) {
+          errMsg =
+            '丰桥查不到该运单的月结费用（8148）。'
+            + '千帆有物流轨迹 ≠ 该单挂在你月结账号下；'
+            + '常见原因：退回件单号、他司月结发货、买家付运费。请以下方有金额的运单为准。';
         }
         const result = { ok: false, error: errMsg, raw: inner, apiCode };
         if (apiCode !== 'A1006') expressCache.set(ck, result);
@@ -638,6 +861,14 @@
         waybillNo: info.waybillNo || no,
         customerAcctCode: info.customerAcctCode || '',
         meterageWeightQty: info.meterageWeightQty,
+        realWeightQty: info.realWeightQty,
+        jProvince: info.jProvince,
+        jCity: info.jCity,
+        dProvince: info.dProvince,
+        dCity: info.dCity,
+        addresseeContName: info.addresseeContName,
+        expressTypeCode: info.expressTypeCode,
+        waybillChilds: info.waybillChilds,
         totalFee: total,
         fees: fees.map((f) => ({
           name: f.feeName || f.name || '费用',
@@ -660,8 +891,6 @@
   let panelEl;
   let bodyEl;
   let settingsEl;
-  let refreshInFlight = false;
-  let refreshSession = 0;
 
   function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
@@ -669,7 +898,7 @@
 
   function renderBuyerHeader(buyerNick, buyerUserId) {
     const nick = String(buyerNick || '').trim();
-    const trace = latestTraceForBuyer(buyerUserId);
+    const trace = resolveBuyerTrace(buyerUserId);
     if (!nick && !trace) return '';
     let html = '<div class="qsf-buyer">';
     if (nick) html += `<div class="qsf-buyer-nick">${esc(nick)}</div>`;
@@ -713,34 +942,149 @@
     return String(window.__qfSfFeeIconDataUrl || '').trim();
   }
 
+  function isPanelExpanded() {
+    return Boolean(panelEl?.classList.contains('qsf-expanded'));
+  }
+
   function expandPanel() {
     if (!panelEl) return;
     panelEl.classList.remove('qsf-icon-only');
     panelEl.classList.add('qsf-expanded');
+    clearIconInlinePos();
+    void refreshPanel({ waitForData: true });
   }
 
   function collapseToIcon() {
     if (!panelEl) return;
+    refreshSession++;
+    refreshInFlight = false;
     panelEl.classList.add('qsf-icon-only');
     panelEl.classList.remove('qsf-expanded');
     if (settingsEl) settingsEl.classList.remove('open');
+    applyIconPosition();
+  }
+
+  function loadIconPos() {
+    try {
+      const pos = JSON.parse(localStorage.getItem(ICON_POS_KEY) || 'null');
+      if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) return pos;
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
+  function saveIconPos(left, top) {
+    try {
+      localStorage.setItem(ICON_POS_KEY, JSON.stringify({ left, top }));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function clearIconInlinePos() {
+    if (!panelEl) return;
+    panelEl.style.left = '';
+    panelEl.style.top = '';
+    panelEl.style.right = '';
+    panelEl.style.bottom = '';
+  }
+
+  function applyIconPosition() {
+    if (!panelEl || !panelEl.classList.contains('qsf-icon-only')) return;
+    const pos = loadIconPos();
+    if (pos) {
+      const size = 30;
+      const left = Math.max(4, Math.min(pos.left, window.innerWidth - size - 4));
+      const top = Math.max(4, Math.min(pos.top, window.innerHeight - size - 4));
+      panelEl.style.left = `${left}px`;
+      panelEl.style.top = `${top}px`;
+      panelEl.style.right = 'auto';
+      panelEl.style.bottom = 'auto';
+      return;
+    }
+    panelEl.style.top = '48px';
+    panelEl.style.right = '8px';
+    panelEl.style.left = 'auto';
+    panelEl.style.bottom = 'auto';
+  }
+
+  let launcherDrag = null;
+
+  function bindLauncherDrag() {
+    const launcher = panelEl?.querySelector('.qsf-launcher');
+    if (!launcher || launcher.__qsfDragBound) return;
+    launcher.__qsfDragBound = true;
+    launcher.setAttribute('title', '按住拖动 · 单击展开');
+
+    launcher.addEventListener('mousedown', (ev) => {
+      if (!panelEl.classList.contains('qsf-icon-only') || ev.button !== 0) return;
+      ev.stopPropagation();
+      const rect = panelEl.getBoundingClientRect();
+      launcherDrag = {
+        startX: ev.clientX,
+        startY: ev.clientY,
+        origLeft: rect.left,
+        origTop: rect.top,
+        moved: false,
+      };
+      panelEl.style.left = `${rect.left}px`;
+      panelEl.style.top = `${rect.top}px`;
+      panelEl.style.right = 'auto';
+      panelEl.style.bottom = 'auto';
+
+      const onMove = (e) => {
+        if (!launcherDrag) return;
+        const dx = e.clientX - launcherDrag.startX;
+        const dy = e.clientY - launcherDrag.startY;
+        if (Math.abs(dx) + Math.abs(dy) > 4) launcherDrag.moved = true;
+        const size = 30;
+        let left = launcherDrag.origLeft + dx;
+        let top = launcherDrag.origTop + dy;
+        left = Math.max(4, Math.min(left, window.innerWidth - size - 4));
+        top = Math.max(4, Math.min(top, window.innerHeight - size - 4));
+        panelEl.style.left = `${left}px`;
+        panelEl.style.top = `${top}px`;
+        launcher.style.cursor = launcherDrag.moved ? 'grabbing' : 'grab';
+      };
+
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        window.removeEventListener('blur', onUp);
+        delete window.__qfSfLauncherDragCleanup;
+        launcher.style.cursor = 'grab';
+        if (!launcherDrag) return;
+        if (launcherDrag.moved) {
+          const rect = panelEl.getBoundingClientRect();
+          saveIconPos(rect.left, rect.top);
+        } else {
+          expandPanel();
+        }
+        launcherDrag = null;
+      };
+
+      window.__qfSfLauncherDragCleanup = onUp;
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      window.addEventListener('blur', onUp);
+    });
   }
 
   function injectStyles() {
-    if (document.getElementById('qf-sf-fee-panel-style')) return;
-    const style = document.createElement('style');
-    style.id = 'qf-sf-fee-panel-style';
-    style.textContent = `
+    const css = `
       #${PANEL_ID} {
-        position: fixed; z-index: 2147483000;
+        position: fixed; z-index: 2147483000; pointer-events: none;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         font-size: 13px; color: #1f2937;
       }
+      #${PANEL_ID} .qsf-launcher, #${PANEL_ID} .qsf-shell { pointer-events: auto; }
       #${PANEL_ID} * { box-sizing: border-box; }
       #${PANEL_ID} .qsf-launcher {
         width: 30px; height: 30px; padding: 0; margin: 0; border: none; border-radius: 6px;
-        background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.18); cursor: pointer;
+        background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.18); cursor: grab;
         display: flex; align-items: center; justify-content: center; overflow: hidden;
+        user-select: none; touch-action: none;
       }
       #${PANEL_ID} .qsf-launcher:hover { box-shadow: 0 4px 16px rgba(0,0,0,.22); }
       #${PANEL_ID} .qsf-launcher img { width: 30px; height: 30px; object-fit: cover; display: block; }
@@ -753,12 +1097,12 @@
         border-left: 1px solid #e5e7eb; box-shadow: -4px 0 16px rgba(0,0,0,.08);
       }
       #${PANEL_ID}.qsf-icon-only {
-        top: 48px; right: 8px; width: 30px; height: 30px; bottom: auto;
+        width: 30px; height: 30px; bottom: auto;
       }
       #${PANEL_ID}.qsf-icon-only .qsf-launcher { display: flex; }
       #${PANEL_ID}.qsf-icon-only .qsf-shell { display: none; }
       #${PANEL_ID}.qsf-expanded {
-        top: 48px; right: 0; bottom: 0; width: 300px;
+        top: 48px; right: 0; bottom: 0; width: 300px; left: auto !important;
       }
       #${PANEL_ID}.qsf-expanded .qsf-launcher { display: none; }
       #${PANEL_ID}.qsf-expanded .qsf-shell { display: flex; width: 100%; height: 100%; }
@@ -787,7 +1131,8 @@
         border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; margin-bottom: 10px; background: #fff;
       }
       #${PANEL_ID} .qsf-no { font-family: ui-monospace, monospace; font-weight: 600; color: #111827; }
-      #${PANEL_ID} .qsf-meta { color: #6b7280; font-size: 11px; margin-top: 4px; }
+      #${PANEL_ID} .qsf-meta { color: #6b7280; font-size: 11px; margin-top: 4px; line-height: 1.45; }
+      #${PANEL_ID} .qsf-meta-warn { color: #b45309; }
       #${PANEL_ID} .qsf-total { font-size: 18px; font-weight: 700; color: #dc2626; margin: 6px 0; }
       #${PANEL_ID} .qsf-fee-line { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; }
       #${PANEL_ID} .qsf-err { color: #dc2626; font-size: 12px; }
@@ -796,6 +1141,11 @@
         display: none; padding: 10px 12px; border-top: 1px solid #e5e7eb; background: #fafafa; flex-shrink: 0;
       }
       #${PANEL_ID} .qsf-settings.open { display: block; }
+      #${PANEL_ID} .qsf-foot {
+        flex-shrink: 0; padding: 6px 12px; border-top: 1px solid #e5e7eb;
+        text-align: center; color: #6b7280; font-size: 11px; background: #fafafa;
+      }
+      #${PANEL_ID} .qsf-ver { font-weight: 500; }
       #${PANEL_ID} .qsf-settings label { display: block; margin-bottom: 8px; font-size: 12px; color: #374151; }
       #${PANEL_ID} .qsf-settings input[type=text], #${PANEL_ID} .qsf-settings input[type=password] {
         width: 100%; margin-top: 4px; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 12px;
@@ -814,15 +1164,23 @@
         100% { transform: translateX(320%); }
       }
     `;
+    let style = document.getElementById('qf-sf-fee-panel-style');
+    if (style) {
+      style.textContent = css;
+      return;
+    }
+    style = document.createElement('style');
+    style.id = 'qf-sf-fee-panel-style';
+    style.textContent = css;
     document.head.appendChild(style);
   }
 
   function launcherMarkup() {
     const icon = launcherIconUrl();
     if (icon) {
-      return `<button type="button" class="qsf-launcher" data-act="expand" title="顺丰月结运费"><img src="${icon}" alt="顺丰运费" width="30" height="30"></button>`;
+      return `<button type="button" class="qsf-launcher" title="按住拖动 · 单击展开"><img src="${icon}" alt="顺丰运费" width="30" height="30" draggable="false"></button>`;
     }
-    return `<button type="button" class="qsf-launcher" data-act="expand" title="顺丰月结运费"><span class="qsf-launcher-fallback">SF</span></button>`;
+    return `<button type="button" class="qsf-launcher" title="按住拖动 · 单击展开"><span class="qsf-launcher-fallback">SF</span></button>`;
   }
 
   function buildPanel() {
@@ -830,6 +1188,12 @@
       panelEl = document.getElementById(PANEL_ID);
       bodyEl = panelEl.querySelector('.qsf-body');
       settingsEl = panelEl.querySelector('.qsf-settings');
+      const titleText = panelEl.querySelector('.qsf-title-text');
+      if (titleText) titleText.textContent = '顺丰月结运费';
+      injectStyles();
+      qsfEnsureFooter();
+      bindLauncherDrag();
+      if (panelEl.classList.contains('qsf-icon-only')) applyIconPosition();
       return;
     }
     injectStyles();
@@ -849,6 +1213,7 @@
         </div>
         <div class="qsf-body"></div>
         <div class="qsf-settings"></div>
+        <div class="qsf-foot"><span class="qsf-ver">v${VERSION}</span></div>
       </div>
     `;
     document.body.appendChild(panelEl);
@@ -859,15 +1224,18 @@
       const btn = ev.target.closest('[data-act]');
       if (!btn) return;
       const act = btn.getAttribute('data-act');
-      if (act === 'expand') expandPanel();
       if (act === 'refresh') void refreshPanel({ force: true, waitForData: false });
       if (act === 'settings') toggleSettings();
       if (act === 'collapse') collapseToIcon();
       if (act === 'save-config') saveSettingsFromForm();
     });
 
+    bindLauncherDrag();
+    applyIconPosition();
+
     renderSettingsForm();
     bodyEl.innerHTML = '<div class="qsf-empty">点击左侧买家会话，将自动查询顺丰运单月结扣费</div>';
+    qsfEnsureFooter();
   }
 
   function renderSettingsForm() {
@@ -904,14 +1272,15 @@
     saveConfig(cfg);
     expressCache.clear();
     settingsEl.classList.remove('open');
-    void refreshPanel();
+    if (isPanelExpanded()) void refreshPanel();
   }
 
   async function refreshPanel(opts = {}) {
+    buildPanel();
+    if (!isPanelExpanded()) return;
     const force = opts.force === true;
     const waitForData = opts.waitForData !== false && !force;
     const sessionId = ++refreshSession;
-    buildPanel();
     setRefreshLoading(true);
     refreshInFlight = true;
 
@@ -968,24 +1337,30 @@
       }
       if (sessionId !== refreshSession) return;
 
+      cards.sort((a, b) => {
+        if (a.fee.ok && !b.fee.ok) return -1;
+        if (!a.fee.ok && b.fee.ok) return 1;
+        if (a.pkg.primary && !b.pkg.primary) return -1;
+        if (!a.pkg.primary && b.pkg.primary) return 1;
+        return 0;
+      });
+
       let html = renderBuyerHeader(buyerNick, buyerUserId);
       for (const { pkg, fee } of cards) {
         html += `<div class="qsf-card">`;
         html += `<div class="qsf-no">${esc(pkg.expressNo)}</div>`;
-        if (pkg.lastTrace) html += `<div class="qsf-meta qsf-trace">${esc(pkg.lastTrace)}</div>`;
-        else if (pkg.orderId && !isInternalId(pkg.orderId)) html += `<div class="qsf-meta">订单 ${esc(pkg.orderId)}</div>`;
         if (!fee.ok) {
           html += `<div class="qsf-err">${esc(fee.error)}</div>`;
         } else {
           html += `<div class="qsf-total">${money(fee.totalFee)}</div>`;
-          if (fee.customerAcctCode) html += `<div class="qsf-meta">月结账号 ${esc(fee.customerAcctCode)} · 计费重 ${fee.meterageWeightQty ?? '-'} kg</div>`;
+          html += renderFeeCardMeta(fee, pkg);
           for (const line of fee.fees) {
             html += `<div class="qsf-fee-line"><span>${esc(line.name)}${line.settlement ? ` (${line.settlement})` : ''}</span><span>${money(line.amount)}</span></div>`;
           }
         }
         html += `</div>`;
       }
-      html += `<div class="qsf-meta" style="text-align:center;margin-top:8px;">已更新 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>`;
+      html += `<div class="qsf-meta" style="text-align:center;margin-top:8px;">已更新 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} · v${VERSION}</div>`;
       bodyEl.innerHTML = html;
     } finally {
       if (sessionId === refreshSession) {
@@ -1002,7 +1377,7 @@
     if (!buyerUserId) return;
     activeBuyer = { buyerUserId, buyerNick: buyerNick || activeBuyer.buyerNick, appCid };
     buildPanel();
-    void refreshPanel({ waitForData: true });
+    if (isPanelExpanded()) void refreshPanel({ waitForData: true });
   }
 
   function scheduleActivateChatItem(item) {
@@ -1034,18 +1409,18 @@
   }
 
   function bindClickListener() {
-    document.addEventListener(
-      'click',
-      (ev) => {
-        const item = findChatItem(ev.target);
-        if (!item) return;
-        setTimeout(() => scheduleActivateChatItem(item), 300);
-      },
-      true,
-    );
+    if (window.__qfSfChatClickHandler) return;
+    window.__qfSfChatClickHandler = (ev) => {
+      const item = findChatItem(ev.target);
+      if (!item) return;
+      setTimeout(() => scheduleActivateChatItem(item), 300);
+    };
+    document.addEventListener('click', window.__qfSfChatClickHandler, true);
   }
 
   function bindActiveChatObserver() {
+    if (window.__qfSfFeeChatObs) return;
+    let traceTimer = null;
     const obs = new MutationObserver((mutations) => {
       for (const m of mutations) {
         if (m.type !== 'attributes' || m.attributeName !== 'class') continue;
@@ -1055,14 +1430,19 @@
           setTimeout(() => scheduleActivateChatItem(el), 200);
         }
       }
-      if (activeBuyer.buyerUserId) scrapeDomExpress();
+      clearTimeout(traceTimer);
+      traceTimer = setTimeout(() => {
+        if (activeBuyer.buyerUserId && panelEl?.classList.contains('qsf-expanded')) {
+          patchTraceDisplay();
+        }
+      }, 1000);
     });
     obs.observe(document.body, {
       subtree: true,
-      childList: true,
       attributes: true,
       attributeFilter: ['class'],
     });
+    window.__qfSfFeeChatObs = obs;
   }
 
   // ─── 启动 ───────────────────────────────────────────────────────────
@@ -1081,10 +1461,21 @@
   bindActiveChatObserver();
   setTimeout(syncActiveChatItem, 600);
 
+  try {
+    const uiVer = sessionStorage.getItem('qsf_fee_ui_ver');
+    sessionStorage.setItem('qsf_fee_ui_ver', VERSION);
+    if (uiVer && uiVer !== VERSION && panelEl?.classList.contains('qsf-expanded')) {
+      setTimeout(() => void refreshPanel({ force: true }), 300);
+    }
+  } catch {
+    /* ignore */
+  }
+
   window.__qfSfFeePanel = {
     version: VERSION,
     refresh: refreshPanel,
     setBuyer: onBuyerActivated,
+    teardown: teardownPanel,
     clearCache: () => {
       expressCache.clear();
       buyerPackages.clear();

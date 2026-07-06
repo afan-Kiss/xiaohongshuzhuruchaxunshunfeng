@@ -7,6 +7,7 @@ const CDP = require('chrome-remote-interface');
 const { resolveDevtoolsFromQianfanBot } = require('./read-qianfan-debug-config');
 const { loadLauncherIconDataUrl } = require('./load-launcher-icon');
 const { buildInjectSource, isQianfanPageUrl } = require('./build-inject-source');
+const { connectCdp } = require('./cdp-connect');
 
 const ROOT = path.resolve(__dirname, '..');
 const CONFIG_PATH = path.join(ROOT, 'config.json');
@@ -92,17 +93,19 @@ async function fetchPageList(host, port) {
   return list.filter((t) => t.type === 'page' && t.webSocketDebuggerUrl && isQianfanPageUrl(t.url));
 }
 
-async function injectToPage(page, source) {
+async function injectToPage(page, source, prev) {
   let client;
   try {
-    client = await CDP({ target: page.webSocketDebuggerUrl });
+    client = await connectCdp(page.webSocketDebuggerUrl, 8000);
     const { Page, Runtime } = client;
     try {
       await Page.enable();
     } catch {
       /* ignore */
     }
-    await Page.addScriptToEvaluateOnNewDocument({ source });
+    if (!prev?.scriptRegistered) {
+      await Page.addScriptToEvaluateOnNewDocument({ source });
+    }
     await Runtime.evaluate({ expression: source, returnByValue: true, awaitPromise: true });
     log(`已注入: ${page.title || page.url}`);
     return true;
@@ -126,11 +129,10 @@ async function main() {
   }
   const panelJs = fs.readFileSync(PANEL_SCRIPT_PATH, 'utf8');
   const iconDataUrl = loadLauncherIconDataUrl();
-  const injectSource = buildInjectSource(panelJs, config.sf, iconDataUrl);
-  const panelVersionMatch = panelJs.match(/const VERSION = '([^']+)'/);
-  const panelVersion = panelVersionMatch ? panelVersionMatch[1] : '';
+  let panelVersion = panelJs.match(/const VERSION = '([^']+)'/)?.[1] || '';
+  let injectSource = buildInjectSource(panelJs, config.sf, iconDataUrl);
 
-  log(`守护启动 → DevTools ${config.devtoolsHost}:${config.devtoolsPort}`);
+  log(`守护启动 → DevTools ${config.devtoolsHost}:${config.devtoolsPort}，侧栏 v${panelVersion}`);
   if (config.devtoolsSource) log(`端口来源: ${config.devtoolsSource}`);
   if (!config.sf.partnerID || !config.sf.checkWord) {
     log('提示: config.json 未填 sf.partnerID / checkWord，可在侧栏 ⚙ 配置（仅首次）');
@@ -141,6 +143,15 @@ async function main() {
 
   for (;;) {
     try {
+      const currentPanelJs = fs.readFileSync(PANEL_SCRIPT_PATH, 'utf8');
+      const currentVersion = currentPanelJs.match(/const VERSION = '([^']+)'/)?.[1] || '';
+      if (currentVersion && currentVersion !== panelVersion) {
+        panelVersion = currentVersion;
+        injectSource = buildInjectSource(currentPanelJs, config.sf, iconDataUrl);
+        injected.clear();
+        log(`检测到侧栏新版本 v${panelVersion}，将重新注入所有页面`);
+      }
+
       const pages = await fetchPageList(config.devtoolsHost, config.devtoolsPort);
       if (!devtoolsUp) {
         log(`已连接 DevTools，当前 ${pages.length} 个千帆页面`);
@@ -157,25 +168,43 @@ async function main() {
         const prev = injected.get(ws) || { ok: false, fails: 0 };
         let needInject = !prev.ok;
 
-        if (prev.ok) {
+        const versionCheckDue =
+          prev.ok && (!prev.versionCheckedAt || Date.now() - prev.versionCheckedAt > 30000);
+
+        if (versionCheckDue) {
           try {
-            const client = await CDP({ target: ws });
-            const check = await client.Runtime.evaluate({
-              expression: 'window.__qfSfFeePanel && window.__qfSfFeePanel.version',
-              returnByValue: true,
-            });
+            const client = await connectCdp(ws, 5000);
+            const check = await Promise.race([
+              client.Runtime.evaluate({
+                expression: `(function(){
+                var p = document.getElementById('qf-sf-fee-panel-root');
+                return {
+                  version: window.__qfSfFeePanel && window.__qfSfFeePanel.version,
+                  hasPanel: !!p
+                };
+              })()`,
+                returnByValue: true,
+              }),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('version check timeout')), 5000)),
+            ]);
             await client.close();
-            if (check.result?.value !== panelVersion) needInject = true;
+            const info = check.result?.value || {};
+            injected.set(ws, { ...prev, versionCheckedAt: Date.now() });
+            if (info.version !== panelVersion) needInject = true;
+            else if (!info.hasPanel) needInject = true;
+            else continue;
           } catch {
             needInject = true;
           }
+        } else if (prev.ok) {
+          continue;
         }
 
         if (!needInject) continue;
 
         try {
-          await injectToPage(page, injectSource);
-          injected.set(ws, { at: Date.now(), ok: true, fails: 0, title: page.title });
+          await injectToPage(page, injectSource, prev);
+          injected.set(ws, { ok: true, fails: 0, title: page.title, scriptRegistered: true });
         } catch (err) {
           const fails = (prev.fails || 0) + 1;
           injected.set(ws, { at: Date.now(), ok: false, fails, title: page.title });
