@@ -4,7 +4,7 @@
  * 丰桥凭证：config.json → sf.partnerID / sf.checkWord（或侧栏 ⚙ 一次）
  */
 (function qfSfFeePanelBootstrap() {
-  const VERSION = '1.0.31';
+  const VERSION = '1.0.36';
   const ICON_POS_KEY = 'qsf_icon_pos_v1';
   const STORAGE_KEY = 'qf_sf_fee_config_v1';
   const BUYER_CACHE_KEY = 'qsf_buyer_panel_v1';
@@ -12,6 +12,12 @@
   const SF_PROD = 'https://sfapi.sf-express.com/std/service';
   const SF_SBOX = 'https://sfapi-sbox.sf-express.com/std/service';
   const PANEL_ID = 'qf-sf-fee-panel-root';
+
+  let activateTimer = null;
+  let buyerRefreshTimer = null;
+  let sessionActivateTimer = null;
+  let headerSyncTimer = null;
+  let lastActivatedBuyerId = '';
 
   function qsfEnsureFooter() {
     try {
@@ -36,18 +42,22 @@
     }
   }
 
-  if (window.__qfSfFeePanel?.version === VERSION) {
+  if (window.__qfSfFeePanel?.version === VERSION && typeof window.__qfSfFeePanel.syncSession === 'function') {
     console.log('[顺丰运费] 已加载，版本', window.__qfSfFeePanel.version);
     qsfEnsureFooter();
     if (!document.getElementById(PANEL_ID)) {
       delete window.__qfSfFeePanel;
     } else {
+      window.__qfSfFeePanel.syncSession();
       const root = document.getElementById(PANEL_ID);
       if (root?.classList.contains('qsf-expanded') && typeof window.__qfSfFeePanel.refresh === 'function') {
         void window.__qfSfFeePanel.refresh({ preferCache: true });
       }
       return;
     }
+  } else if (window.__qfSfFeePanel?.version) {
+    try { window.__qfSfFeePanel.teardown?.(); } catch { /* ignore */ }
+    delete window.__qfSfFeePanel;
   }
   if (window.__qfSfFeePanel) {
     try {
@@ -72,6 +82,17 @@
         window.__qfSfFeeChatObs.disconnect();
         delete window.__qfSfFeeChatObs;
       }
+      if (window.__qfSfHeaderObs) {
+        window.__qfSfHeaderObs.disconnect();
+        delete window.__qfSfHeaderObs;
+      }
+      if (headerSyncTimer) {
+        clearInterval(headerSyncTimer);
+        headerSyncTimer = null;
+      }
+      clearTimeout(activateTimer);
+      clearTimeout(buyerRefreshTimer);
+      clearTimeout(sessionActivateTimer);
       if (window.__qfSfLauncherDragCleanup) {
         window.__qfSfLauncherDragCleanup();
         delete window.__qfSfLauncherDragCleanup;
@@ -336,6 +357,50 @@
     let nick = m ? m[1].trim() : t.split(' ')[0] || '';
     nick = nick.replace(/\b[0-9a-f]{20,32}\b/gi, '').replace(/\s+/g, ' ').trim();
     return nick;
+  }
+
+  function normPanelText(s) {
+    return String(s || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function scrapeHeaderBuyerNick() {
+    const ui = document.querySelector('.user-info-detail, .user-info');
+    if (!ui) return '';
+    let nick = normPanelText(ui.textContent);
+    nick = nick.replace(/点击添加备注.*$/i, '').trim();
+    nick = nick.replace(/老客.*$/i, '').trim();
+    nick = nick.replace(/共消费.*$/i, '').trim();
+    return nick.slice(0, 40);
+  }
+
+  function findChatItemByNick(buyerNick) {
+    const nick = normPanelText(buyerNick);
+    if (!nick) return null;
+    for (const el of document.querySelectorAll('.chat-item, [class*="chat-item"]')) {
+      const itemNick = nickFromChatItem(el);
+      if (!itemNick) continue;
+      if (itemNick === nick || itemNick.startsWith(nick) || nick.startsWith(itemNick)) return el;
+    }
+    return null;
+  }
+
+  function findActiveChatItemEl() {
+    const headerNick = scrapeHeaderBuyerNick();
+    if (headerNick) {
+      const byHeader = findChatItemByNick(headerNick);
+      if (byHeader) return byHeader;
+      return null;
+    }
+    return document.querySelector('.chat-item.active, .chat-item[class*="active"]');
+  }
+
+  function extractAppCidFromNode(node) {
+    if (!node || typeof node !== 'object') return '';
+    return String(
+      node.appCid || node.app_cid || node.cid
+      || node.singleChatInfo?.appCid || node.single_chat_info?.appCid
+      || node.chatInfo?.appCid || node.conversation?.appCid || '',
+    ).trim();
   }
 
   function isInternalId(s) {
@@ -667,6 +732,12 @@
     return m ? decodeURIComponent(m[1]) : '';
   }
 
+  function parseAppCidFromUrl(url) {
+    const u = String(url || '');
+    const m = u.match(/[?&](?:appCid|app_cid|cid)=([^&#]+)/i);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
   function pkgByIdKey(buyerUserId, packageId) {
     const uid = String(buyerUserId || '').trim();
     const pid = String(packageId || '').trim();
@@ -801,6 +872,43 @@
     return count;
   }
 
+  function bootstrapBuyerFromOrderPanel() {
+    if (activeBuyer.buyerUserId) return;
+    const visibleIds = getVisibleOrderPackageIds();
+    if (!visibleIds.length) return;
+    const card = findCardByPackageId(visibleIds[0]);
+    if (!card) return;
+    try {
+      card.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    } catch {
+      /* ignore */
+    }
+    const clickTarget = card.querySelector('.order-card-header')
+      || card.querySelector('.order-card-title')
+      || card.querySelector('.order-card-title-id')
+      || card;
+    try {
+      clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+      clickTarget.click?.();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function waitForBuyerUserId(maxMs = 2400) {
+    let clicked = false;
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+      if (activeBuyer.buyerUserId) return activeBuyer.buyerUserId;
+      if (!clicked) {
+        bootstrapBuyerFromOrderPanel();
+        clicked = true;
+      }
+      await sleep(200);
+    }
+    return activeBuyer.buyerUserId || '';
+  }
+
   function findCardByPackageId(packageId) {
     const root = orderPanelRoot();
     if (!root || !packageId) return null;
@@ -877,6 +985,9 @@
       expressCompany,
       ...(lastTrace ? { lastTrace } : {}),
     });
+    if (uid && packageId && getVisibleOrderPackageIds().includes(packageId)) {
+      queueSessionActivation({ buyerUserId: uid, buyerNick: scrapeHeaderBuyerNick(), fromOrderPanel: true });
+    }
     return Boolean(expressNo);
   }
 
@@ -944,10 +1055,12 @@
     const u = String(url || '');
     if (!u || /sf-express\.com/i.test(u)) return false;
     if (!/xiaohongshu/i.test(u)) return false;
-    return /\/api\/edith\/(package|order|logistics|express)/i.test(u)
+    return /\/api\/edith\/(package|order|logistics|express|message|im|chat|conv)/i.test(u)
       || /search-list/i.test(u)
       || /\/package\//i.test(u)
-      || /logistics/i.test(u);
+      || /logistics/i.test(u)
+      || /\/im(paas)?\//i.test(u)
+      || /message-list|messagelist|singlechat|open.?session/i.test(u);
   }
 
   function scheduleIngestRefresh(reason) {
@@ -983,16 +1096,31 @@
     const fromDetail = ingestPackageDetailEnvelope(json, { ...meta, packageId: urlPid });
     if (fromDetail && activeBuyer.buyerUserId) refreshReason = 'newExpress';
     if (!fromDetail && !shouldIngestApiUrl(reqUrl)) return;
+    const visibleIds = getVisibleOrderPackageIds();
     walkJson(json, (node) => {
-      const buyerUserId = String(node.buyer_user_id || node.buyerUserId || '').trim();
+      const appCid = extractAppCidFromNode(node);
+      if (appCid.startsWith('$3$')) {
+        const uid = uidFromAppCid(appCid);
+        if (uid) {
+          queueSessionActivation({
+            buyerUserId: uid,
+            appCid,
+            buyerNick: String(node.buyer_nick || node.buyerNick || node.nick_name || node.nickName || scrapeHeaderBuyerNick() || '').trim(),
+          });
+        }
+      }
+      const packageId = String(node.package_id || node.packageId || '').trim();
+      const isDetailUrl = /\/package\/[^/?#]+\/detail/i.test(String(meta.url || ''));
+      const resolvedPackageId = packageId || (isDetailUrl && urlPid ? urlPid : '');
+      const buyerUserId = String(node.buyer_user_id || node.buyerUserId || '').trim()
+        || (resolvedPackageId && (/\/package\//i.test(reqUrl) || isDetailUrl)
+          ? String(node.user_id || '').trim()
+          : '');
       const expressNo = String(
         node.express_no || node.express_number || node.expressNo || node.ship_express_no || node.tracking_no || '',
       ).trim().toUpperCase();
       const expressCompany = String(node.express_company || node.expressCompanyName || node.express_company_name || '').trim();
-      const packageId = String(node.package_id || node.packageId || '').trim();
       const lastTrace = pickTraceText(node);
-      const isDetailUrl = /\/package\/[^/?#]+\/detail/i.test(String(meta.url || ''));
-      const resolvedPackageId = packageId || (isDetailUrl && urlPid ? urlPid : '');
       const uid = buyerUserId
         || (resolvedPackageId && isRelevantToActiveBuyer('', resolvedPackageId) ? activeBuyer.buyerUserId : '');
       const isActive = Boolean(uid && uid === activeBuyer.buyerUserId);
@@ -1002,6 +1130,10 @@
         packageId: resolvedPackageId,
         ...(lastTrace ? { lastTrace } : {}),
       };
+
+      if (buyerUserId && resolvedPackageId && (visibleIds.includes(resolvedPackageId) || (!visibleIds.length && scrapeHeaderBuyerNick()))) {
+        queueSessionActivation({ buyerUserId, buyerNick: scrapeHeaderBuyerNick(), fromOrderPanel: true });
+      }
 
       if (!uid || !resolvedPackageId) return;
 
@@ -1036,7 +1168,16 @@
         const clone = res.clone();
         const ct = clone.headers.get('content-type') || '';
         if (ct.includes('json') || /xiaohongshu/i.test(reqUrl)) {
-          const meta = { url: reqUrl, packageId: parsePackageIdFromUrl(reqUrl) };
+          const meta = {
+            url: reqUrl,
+            packageId: parsePackageIdFromUrl(reqUrl),
+            appCid: parseAppCidFromUrl(reqUrl),
+          };
+          const urlCid = meta.appCid;
+          if (urlCid && urlCid.startsWith('$3$')) {
+            const uid = uidFromAppCid(urlCid);
+            if (uid) queueSessionActivation({ buyerUserId: uid, appCid: urlCid, buyerNick: scrapeHeaderBuyerNick(), fromUrlAppCid: true });
+          }
           clone.json().then((j) => ingestJsonBody(j, meta)).catch(() => {});
         }
       } catch {
@@ -1060,7 +1201,16 @@
         try {
           const url = this.__qfSfUrl || '';
           if (!shouldIngestApiUrl(url)) return;
-          const meta = { url, packageId: parsePackageIdFromUrl(url) };
+          const meta = {
+            url,
+            packageId: parsePackageIdFromUrl(url),
+            appCid: parseAppCidFromUrl(url),
+          };
+          const urlCid = meta.appCid;
+          if (urlCid && urlCid.startsWith('$3$')) {
+            const uid = uidFromAppCid(urlCid);
+            if (uid) queueSessionActivation({ buyerUserId: uid, appCid: urlCid, buyerNick: scrapeHeaderBuyerNick(), fromUrlAppCid: true });
+          }
           if (String(this.responseType) === 'json' && this.response) ingestJsonBody(this.response, meta);
           else if (typeof this.responseText === 'string' && this.responseText.startsWith('{')) {
             ingestJsonBody(JSON.parse(this.responseText), meta);
@@ -1603,6 +1753,7 @@
     panelEl.classList.remove('qsf-icon-only');
     panelEl.classList.add('qsf-expanded');
     clearIconInlinePos();
+    syncActiveSessionFromDom();
     void refreshPanel({ preferCache: true });
   }
 
@@ -1962,10 +2113,22 @@
     const waitForData = !force && (opts.waitForData !== false || preferCache);
     const sessionId = ++refreshSession;
     const cfg = loadConfig();
-    const { buyerUserId, buyerNick } = activeBuyer;
+    let { buyerUserId, buyerNick } = activeBuyer;
 
     if (!buyerUserId) {
-      bodyEl.innerHTML = '<div class="qsf-empty">请在左侧点击一个买家会话</div>';
+      const headerNick = scrapeHeaderBuyerNick();
+      if (headerNick) {
+        syncActiveSessionFromDom();
+        buyerNick = headerNick;
+        bodyEl.innerHTML = renderLoadingPanel(buyerNick, '正在识别跳转会话买家…', '');
+        await waitForBuyerUserId(force ? 1200 : 2600);
+        buyerUserId = activeBuyer.buyerUserId;
+        buyerNick = activeBuyer.buyerNick || buyerNick;
+      }
+    }
+
+    if (!buyerUserId) {
+      bodyEl.innerHTML = '<div class="qsf-empty">请在左侧点击一个买家会话，或通过浏览器插件跳转到买家后再展开侧栏</div>';
       return;
     }
 
@@ -2073,17 +2236,47 @@
     }
   }
 
-  let activateTimer = null;
-  let buyerRefreshTimer = null;
-  let lastActivatedBuyerId = '';
-
-  function onBuyerActivated(appCid, buyerNick) {
-    const buyerUserId = uidFromAppCid(appCid);
+  function queueSessionActivation(info) {
+    const buyerUserId = String(info?.buyerUserId || uidFromAppCid(info?.appCid) || '').trim();
     if (!buyerUserId) return;
+    const headerNick = scrapeHeaderBuyerNick();
+    const buyerNick = String(info?.buyerNick || headerNick || activeBuyer.buyerNick || '').trim();
+    const appCid = String(info?.appCid || activeBuyer.appCid || '').trim();
+    const fromOrderPanel = info?.fromOrderPanel === true;
+
+    const matchedItem = headerNick ? findChatItemByNick(headerNick) : null;
+    if (matchedItem) {
+      const expectedUid = uidFromAppCid(getAppCidFromEl(matchedItem));
+      if (expectedUid && buyerUserId !== expectedUid) return;
+    } else if (headerNick && !fromOrderPanel && !info.fromUrlAppCid) {
+      return;
+    }
+
+    if (buyerUserId === activeBuyer.buyerUserId && !orderPanelStale) {
+      if (buyerNick && buyerNick !== activeBuyer.buyerNick) {
+        activeBuyer = { ...activeBuyer, buyerNick };
+        buildPanel();
+      }
+      return;
+    }
+    clearTimeout(sessionActivateTimer);
+    sessionActivateTimer = setTimeout(() => {
+      onBuyerActivated(appCid, buyerNick, { buyerUserId });
+    }, 90);
+  }
+
+  function onBuyerActivated(appCid, buyerNick, opts = {}) {
+    const buyerUserId = String(opts.buyerUserId || uidFromAppCid(appCid) || '').trim();
+    if (!buyerUserId) return;
+    const resolvedNick = buyerNick || scrapeHeaderBuyerNick() || activeBuyer.buyerNick;
     const buyerChanged = buyerUserId !== lastActivatedBuyerId;
     lastActivatedBuyerId = buyerUserId;
     orderPanelStale = buyerChanged ? true : orderPanelStale;
-    activeBuyer = { buyerUserId, buyerNick: buyerNick || activeBuyer.buyerNick, appCid };
+    activeBuyer = {
+      buyerUserId,
+      buyerNick: resolvedNick,
+      appCid: appCid || (buyerChanged ? '' : activeBuyer.appCid) || '',
+    };
     buildPanel();
     if (!isPanelExpanded()) return;
 
@@ -2101,9 +2294,15 @@
     if (!item) return;
     const appCid = getAppCidFromEl(item);
     const buyerUserId = uidFromAppCid(appCid);
-    if (buyerUserId && buyerUserId === activeBuyer.buyerUserId && !orderPanelStale) return;
+    const headerNick = scrapeHeaderBuyerNick();
+    const itemNick = nickFromChatItem(item);
+    if (buyerUserId && buyerUserId === activeBuyer.buyerUserId && !orderPanelStale) {
+      if (!headerNick || headerNick === itemNick || headerNick === activeBuyer.buyerNick) return;
+    }
     clearTimeout(activateTimer);
-    activateTimer = setTimeout(() => onBuyerActivated(appCid, nickFromChatItem(item)), 120);
+    activateTimer = setTimeout(() => {
+      onBuyerActivated(appCid, itemNick || headerNick, buyerUserId ? { buyerUserId } : {});
+    }, 120);
   }
 
   function activateChatItem(item) {
@@ -2115,17 +2314,67 @@
   }
 
   function syncActiveBuyerFromDom() {
-    const active = document.querySelector('.chat-item.active');
-    if (!active) return;
-    const appCid = getAppCidFromEl(active);
-    const buyerUserId = uidFromAppCid(appCid);
-    if (!buyerUserId) return;
-    activeBuyer = { buyerUserId, buyerNick: nickFromChatItem(active), appCid };
+    const active = findActiveChatItemEl();
+    if (active) {
+      const appCid = getAppCidFromEl(active);
+      const buyerUserId = uidFromAppCid(appCid);
+      if (!buyerUserId) return;
+      activeBuyer = { buyerUserId, buyerNick: nickFromChatItem(active) || scrapeHeaderBuyerNick(), appCid };
+      return;
+    }
+    const headerNick = scrapeHeaderBuyerNick();
+    if (headerNick) activeBuyer = { ...activeBuyer, buyerNick: headerNick };
+  }
+
+  function syncActiveSessionFromDom() {
+    const active = findActiveChatItemEl();
+    if (active) {
+      scheduleActivateChatItem(active);
+      return true;
+    }
+    const headerNick = scrapeHeaderBuyerNick();
+    if (!headerNick) return false;
+    if (headerNick !== activeBuyer.buyerNick || !activeBuyer.buyerUserId) {
+      if (headerNick !== activeBuyer.buyerNick) {
+        orderPanelStale = true;
+        const matchedItem = findChatItemByNick(headerNick);
+        if (matchedItem) {
+          const appCid = getAppCidFromEl(matchedItem);
+          activeBuyer = {
+            buyerUserId: uidFromAppCid(appCid),
+            buyerNick: headerNick,
+            appCid,
+          };
+        } else {
+          activeBuyer = { buyerUserId: '', buyerNick: headerNick, appCid: '' };
+        }
+      }
+      buildPanel();
+      if (!activeBuyer.buyerUserId) bootstrapBuyerFromOrderPanel();
+    }
+    return Boolean(activeBuyer.buyerUserId);
   }
 
   function syncActiveChatItem() {
-    const active = document.querySelector('.chat-item.active');
-    if (active) scheduleActivateChatItem(active);
+    syncActiveSessionFromDom();
+  }
+
+  function bindHeaderBuyerObserver() {
+    if (window.__qfSfHeaderObs) return;
+    let timer = null;
+    const obs = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => syncActiveSessionFromDom(), 150);
+    });
+    const attach = () => {
+      const el = document.querySelector('.user-info-detail') || document.querySelector('.user-info');
+      if (!el || el.__qsfHeaderObserved) return;
+      el.__qsfHeaderObserved = true;
+      obs.observe(el, { childList: true, subtree: true, characterData: true });
+    };
+    attach();
+    headerSyncTimer = setInterval(attach, 2500);
+    window.__qfSfHeaderObs = obs;
   }
 
   function bindClickListener() {
@@ -2146,9 +2395,7 @@
         if (m.type !== 'attributes' || m.attributeName !== 'class') continue;
         const el = m.target;
         if (!el?.classList?.contains('chat-item')) continue;
-        if (el.classList.contains('active')) {
-          scheduleActivateChatItem(el);
-        }
+        syncActiveSessionFromDom();
       }
       if (!panelEl?.classList.contains('qsf-expanded')) return;
       clearTimeout(traceTimer);
@@ -2170,6 +2417,7 @@
     if (window.__qfSfFeePanel?.version === VERSION && document.getElementById(PANEL_ID)) {
       buildPanel();
       ensureIconInViewport();
+      syncActiveSessionFromDom();
       return;
     }
     try {
@@ -2186,9 +2434,11 @@
     buildPanel();
     bindClickListener();
     bindActiveChatObserver();
+    bindHeaderBuyerObserver();
     ensureIconInViewport();
     window.addEventListener('resize', ensureIconInViewport);
-    setTimeout(syncActiveChatItem, 600);
+    setTimeout(syncActiveSessionFromDom, 400);
+    setTimeout(syncActiveSessionFromDom, 1200);
 
     try {
       const uiVer = sessionStorage.getItem('qsf_fee_ui_ver');
@@ -2204,6 +2454,8 @@
       version: VERSION,
       refresh: refreshPanel,
       setBuyer: onBuyerActivated,
+      getActiveBuyer: () => ({ ...activeBuyer }),
+      syncSession: syncActiveSessionFromDom,
       teardown: teardownPanel,
       clearCache: () => {
         expressCache.clear();
