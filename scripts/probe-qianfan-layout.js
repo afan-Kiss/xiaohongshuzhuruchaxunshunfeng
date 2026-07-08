@@ -24,11 +24,11 @@ const EXPR = `(function(){
       class: String(el.className||'').slice(0,60)
     };
   }
-  const panel = document.getElementById('qf-sf-fee-panel-root');
+  const inlineCount = document.querySelectorAll('.qsf-inline-fee-row').length;
   return {
-    version: window.__qfSfFeePanel?.version,
+    version: window.__qfSfFeeInline?.version,
     innerWidth: window.innerWidth,
-    panel: panel ? { parent: panel.parentElement?.nodeName, rect: rect(panel), classes: panel.className } : null,
+    inlineRows: inlineCount,
     layout: out
   };
 })()`;

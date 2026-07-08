@@ -14,20 +14,14 @@ const PROBE = `(function(){
       };
     });
   }
-  var frames = [];
-  try {
-    for (var i=0;i<window.frames.length;i++){
-      try {
-        frames.push({ i: i, url: frames[i]?.location?.href || 'opaque' });
-      } catch(e){ frames.push({ i:i, url:'cross-origin' }); }
-    }
-  } catch(e){}
   return {
     href: location.href,
     title: document.title,
-    hasPanel: !!document.getElementById('qf-sf-fee-panel-root'),
-    hasApi: !!window.__qfSfFeePanel,
-    version: window.__qfSfFeePanel && window.__qfSfFeePanel.version,
+    hasInline: count('.qf-sf-fee-inline') > 0,
+    inlineCount: count('.qf-sf-fee-inline'),
+    hasLegacyPanel: !!document.getElementById('qf-sf-fee-panel-root'),
+    hasInlineApi: !!window.__qfSfFeeInline,
+    version: window.__qfSfFeeInline && window.__qfSfFeeInline.version,
     chatItem: count('.chat-item'),
     chatItemPartial: count('[class*="chat-item"]'),
     appCidNodes: count('[data-app-cid],[data-appcid],[data-cid]'),

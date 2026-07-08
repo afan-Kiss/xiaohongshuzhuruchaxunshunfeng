@@ -64,17 +64,10 @@ const PROBE = `(function(){
     hash: location.hash,
     search: location.search,
   };
-  var panelState = window.__qfSfFeePanel ? {
-    version: window.__qfSfFeePanel.version,
-    activeBuyer: window.__qfSfActiveBuyerProbe || null,
+  var inlineState = window.__qfSfFeeInline ? {
+    version: window.__qfSfFeeInline.version,
+    activeSession: window.__qfSfFeeInline.getActiveSessionKey ? window.__qfSfFeeInline.getActiveSessionKey() : null,
   } : null;
-  try {
-    panelState = panelState || {};
-    panelState.activeBuyerInline = (function() {
-      var ab = { buyerUserId: '', buyerNick: '', appCid: '' };
-      try { return window.__qfSfFeePanel && window.__qfSfFeePanel.getActiveBuyer ? window.__qfSfFeePanel.getActiveBuyer() : null; } catch(e) { return null; }
-    })();
-  } catch (e) {}
   return {
     urlInfo: urlInfo,
     hits: hits,
@@ -89,8 +82,9 @@ const PROBE = `(function(){
       };
     }),
     orderPanel: !!document.querySelector('.order-card, [class*="order-card"]'),
-    qsfPanel: !!document.getElementById('qf-sf-fee-panel-root'),
-    qsfExpanded: !!document.querySelector('#qf-sf-fee-panel-root.qsf-expanded'),
+    inlineState: inlineState,
+    inlineRows: document.querySelectorAll('.qsf-inline-fee-row').length,
+    hasLegacyPanel: !!document.getElementById('qf-sf-fee-panel-root'),
   };
 })()`;
 

@@ -2,6 +2,8 @@
   "devtoolsHost": "127.0.0.1",
   "devtoolsPort": null,
   "pollIntervalMs": 2500,
+  "sfFeeWebPort": 6666,
+  "packageProxyPort": 4725,
   "sf": {
     "partnerID": "",
     "checkWord": "",

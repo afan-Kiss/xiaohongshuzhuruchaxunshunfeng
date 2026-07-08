@@ -1,0 +1,1387 @@
+/**
+ * 千帆客服台 · 顺丰月结扣费内嵌（订单卡片内显示，无侧栏窗口）
+ * 由 src/auto-inject.js 通过 CDP 自动注入。
+ */
+(function qfSfFeeInlineBootstrap() {
+  const VERSION = '2.1.6';
+  const STORAGE_KEY = 'qf_sf_fee_config_v1';
+  const STYLE_ID = 'qf-sf-fee-inline-style';
+  const SF_PROD = 'https://sfapi.sf-express.com/std/service';
+  const SF_SBOX = 'https://sfapi-sbox.sf-express.com/std/service';
+  const SF_ERR_CACHE_TTL_MS = 30 * 60 * 1000;
+  const PKG_DETAIL_COOLDOWN_MS = 8000;
+  const SCAN_DEBOUNCE_MS = 600;
+  const MAX_CARD_RETRY = 2;
+  const MONEY_EPS = 0.005;
+
+  const PKG_DETAIL_HOOK_WAIT_MS = 320;
+
+  const expressCache = new Map();
+  const sfFeeInflight = new Map();
+  const packageDetailFetchedAt = new Map();
+  const packageDetailInflight = new Map();
+  const packageDetailCache = new Map();
+  const cardJobs = new Map();
+  const cardRenderCache = new Map();
+  const cardRetryCount = new Map();
+  const cardRetryTimers = new Map();
+  const cardStableKeys = new Set();
+
+  let scanTimer = null;
+  let orderObs = null;
+  let sessionObs = null;
+  let sessionPollTimer = null;
+  let activeSessionKey = '';
+  let sessionGeneration = 0;
+
+  function uidFromAppCid(appCid) {
+    const s = String(appCid || '').trim();
+    if (!s.startsWith('$3$')) return '';
+    const rest = s.slice(3);
+    const dot = rest.indexOf('.');
+    if (dot < 0) return '';
+    try {
+      const buyerRaw = atob(rest.slice(0, dot));
+      const m = buyerRaw.match(/1#2#2#([0-9a-f]+)/i);
+      return m ? m[1] : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function getActiveSessionKey() {
+    const selectors = [
+      '.chat-item.active',
+      '.chat-item.selected',
+      '.chat-item[aria-selected="true"]',
+      '[class*="chat-item"][class*="active"]',
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (!el) continue;
+      const key = el.getAttribute('data-key') || '';
+      const uid = uidFromAppCid(key);
+      if (uid) return uid;
+      if (key) return key;
+    }
+    const header = document.querySelector('[class*="chat-header"], [class*="conversation-header"], [class*="buyer-name"]');
+    const nick = normText(header?.textContent || '');
+    if (nick) return `nick:${nick}`;
+    return '';
+  }
+
+  function isSessionStale(gen) {
+    return gen !== sessionGeneration;
+  }
+
+  function clearCardRetryTimers() {
+    for (const timer of cardRetryTimers.values()) clearTimeout(timer);
+    cardRetryTimers.clear();
+  }
+
+  function cancelSessionWork() {
+    sessionGeneration += 1;
+    clearTimeout(scanTimer);
+    scanTimer = null;
+    clearCardRetryTimers();
+    cardJobs.clear();
+    packageDetailInflight.clear();
+    packageDetailCache.clear();
+    packageDetailFetchedAt.clear();
+    cardRenderCache.clear();
+    cardRetryCount.clear();
+    cardStableKeys.clear();
+    document.querySelectorAll('.qsf-inline-fee-wrap').forEach((el) => el.remove());
+  }
+
+  function onSessionChanged(nextKey) {
+    const key = String(nextKey || '').trim();
+    if (!key || key === activeSessionKey) return;
+    activeSessionKey = key;
+    cancelSessionWork();
+    scheduleScan();
+  }
+
+  function syncSession() {
+    const key = getActiveSessionKey();
+    if (!key) return;
+    if (!activeSessionKey) {
+      activeSessionKey = key;
+      return;
+    }
+    if (key !== activeSessionKey) onSessionChanged(key);
+  }
+
+  function watchSession() {
+    syncSession();
+    if (sessionPollTimer) clearInterval(sessionPollTimer);
+    sessionPollTimer = setInterval(syncSession, 600);
+    if (sessionObs) sessionObs.disconnect();
+    const chatRoot = document.querySelector(
+      '.chat-list, .farmer-chat__left, [class*="session-list"], [class*="chat-list"]',
+    ) || document.body;
+    sessionObs = new MutationObserver(() => syncSession());
+    sessionObs.observe(chatRoot, {
+      attributes: true,
+      attributeFilter: ['class', 'data-key', 'aria-selected'],
+      subtree: true,
+      childList: true,
+    });
+  }
+
+  function unwatchSession() {
+    if (sessionObs) {
+      sessionObs.disconnect();
+      sessionObs = null;
+    }
+    if (sessionPollTimer) {
+      clearInterval(sessionPollTimer);
+      sessionPollTimer = null;
+    }
+    activeSessionKey = '';
+  }
+
+  function unhookFetch() {
+    if (window.__qsfInlineNativeFetch) {
+      window.fetch = window.__qsfInlineNativeFetch;
+    }
+    delete window.__qsfInlineFetchHooked;
+    delete window.__qsfInlineNativeFetch;
+  }
+
+  function isPackageDetailUrl(url) {
+    const u = String(url || '');
+    if (!/package/i.test(u)) return false;
+    if (/package-detail|package_detail|get_package|packageinfo|package_info|packageId|package_id/i.test(u)) {
+      return true;
+    }
+    return /\/package\/[^/?#]+/i.test(u);
+  }
+
+  async function waitForPackageCache(packageId, ms = PKG_DETAIL_HOOK_WAIT_MS) {
+    const ck = detailCacheKey(packageId);
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      const cached = packageDetailCache.get(ck);
+      if (cached) return cached;
+      await sleep(60);
+    }
+    return packageDetailCache.get(ck) || null;
+  }
+
+  function uuid() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
+
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  function normText(s) {
+    return String(s || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function md5Bytes(str) {
+    function cmn(q, a, b, x, s, t) {
+      a = (a + q + x + t) | 0;
+      return (((a << s) | (a >>> (32 - s))) + b) | 0;
+    }
+    function ff(a, b, c, d, x, s, t) { return cmn((b & c) | (~b & d), a, b, x, s, t); }
+    function gg(a, b, c, d, x, s, t) { return cmn((b & d) | (c & ~d), a, b, x, s, t); }
+    function hh(a, b, c, d, x, s, t) { return cmn(b ^ c ^ d, a, b, x, s, t); }
+    function ii(a, b, c, d, x, s, t) { return cmn(c ^ (b | ~d), a, b, x, s, t); }
+    const state = [1732584193, -271733879, -1732584194, 271733878];
+    const bytes = new TextEncoder().encode(String(str));
+    const bitLen = bytes.length * 8;
+    const withOne = bytes.length + 1;
+    const padLen = withOne % 64 <= 56 ? 56 - (withOne % 64) : 120 - (withOne % 64);
+    const total = withOne + padLen + 8;
+    const buf = new Uint8Array(total);
+    buf.set(bytes);
+    buf[bytes.length] = 0x80;
+    const view = new DataView(buf.buffer);
+    view.setUint32(total - 8, bitLen, true);
+    view.setUint32(total - 4, Math.floor(bitLen / 0x100000000), true);
+    for (let off = 0; off < total; off += 64) {
+      const rest = [];
+      for (let i = 0; i < 16; i++) rest[i] = view.getUint32(off + i * 4, true);
+      let a = state[0]; let b = state[1]; let c = state[2]; let d = state[3];
+      a = ff(a, b, c, d, rest[0], 7, -680876936); d = ff(d, a, b, c, rest[1], 12, -389564586);
+      c = ff(c, d, a, b, rest[2], 17, 606105819); b = ff(b, c, d, a, rest[3], 22, -1044525330);
+      a = ff(a, b, c, d, rest[4], 7, -176418897); d = ff(d, a, b, c, rest[5], 12, 1200080426);
+      c = ff(c, d, a, b, rest[6], 17, -1473231341); b = ff(b, c, d, a, rest[7], 22, -45705983);
+      a = ff(a, b, c, d, rest[8], 7, 1770035416); d = ff(d, a, b, c, rest[9], 12, -1958414417);
+      c = ff(c, d, a, b, rest[10], 17, -42063); b = ff(b, c, d, a, rest[11], 22, -1990404162);
+      a = ff(a, b, c, d, rest[12], 7, 1804603682); d = ff(d, a, b, c, rest[13], 12, -40341101);
+      c = ff(c, d, a, b, rest[14], 17, -1502002290); b = ff(b, c, d, a, rest[15], 22, 1236535329);
+      a = gg(a, b, c, d, rest[1], 5, -165796510); d = gg(d, a, b, c, rest[6], 9, -1069501632);
+      c = gg(c, d, a, b, rest[11], 14, 643717713); b = gg(b, c, d, a, rest[0], 20, -373897302);
+      a = gg(a, b, c, d, rest[5], 5, -701558691); d = gg(d, a, b, c, rest[10], 9, 38016083);
+      c = gg(c, d, a, b, rest[15], 14, -660478335); b = gg(b, c, d, a, rest[4], 20, -405537848);
+      a = gg(a, b, c, d, rest[9], 5, 568446438); d = gg(d, a, b, c, rest[14], 9, -1019803690);
+      c = gg(c, d, a, b, rest[3], 14, -187363961); b = gg(b, c, d, a, rest[8], 20, 1163531501);
+      a = gg(a, b, c, d, rest[13], 5, -1444681467); d = gg(d, a, b, c, rest[2], 9, -51403784);
+      c = gg(c, d, a, b, rest[7], 14, 1735328473); b = gg(b, c, d, a, rest[12], 20, -1926607734);
+      a = hh(a, b, c, d, rest[5], 4, -378558); d = hh(d, a, b, c, rest[8], 11, -2022574463);
+      c = hh(c, d, a, b, rest[11], 16, 1839030562); b = hh(b, c, d, a, rest[14], 23, -35309556);
+      a = hh(a, b, c, d, rest[1], 4, -1530992060); d = hh(d, a, b, c, rest[4], 11, 1272893353);
+      c = hh(c, d, a, b, rest[7], 16, -155497632); b = hh(b, c, d, a, rest[10], 23, -1094730640);
+      a = hh(a, b, c, d, rest[13], 4, 681279174); d = hh(d, a, b, c, rest[0], 11, -358537222);
+      c = hh(c, d, a, b, rest[3], 16, -722521979); b = hh(b, c, d, a, rest[6], 23, 76029189);
+      a = hh(a, b, c, d, rest[9], 4, -640364487); d = hh(d, a, b, c, rest[12], 11, -421815835);
+      c = hh(c, d, a, b, rest[15], 16, 530742520); b = hh(b, c, d, a, rest[2], 23, -995338651);
+      a = ii(a, b, c, d, rest[0], 6, -198630844); d = ii(d, a, b, c, rest[7], 10, 1126891415);
+      c = ii(c, d, a, b, rest[14], 15, -1416354905); b = ii(b, c, d, a, rest[5], 21, -57434055);
+      a = ii(a, b, c, d, rest[12], 6, 1700485571); d = ii(d, a, b, c, rest[3], 10, -1894986606);
+      c = ii(c, d, a, b, rest[10], 15, -1051523); b = ii(b, c, d, a, rest[1], 21, -2054922799);
+      a = ii(a, b, c, d, rest[8], 6, 1873313359); d = ii(d, a, b, c, rest[15], 10, -30611744);
+      c = ii(c, d, a, b, rest[6], 15, -1560198380); b = ii(b, c, d, a, rest[13], 21, 1309151649);
+      a = ii(a, b, c, d, rest[4], 6, -145523070); d = ii(d, a, b, c, rest[11], 10, -1120210379);
+      c = ii(c, d, a, b, rest[2], 15, 718787259); b = ii(b, c, d, a, rest[9], 21, -343485551);
+      state[0] = (state[0] + a) | 0; state[1] = (state[1] + b) | 0;
+      state[2] = (state[2] + c) | 0; state[3] = (state[3] + d) | 0;
+    }
+    const out = new Uint8Array(16);
+    for (let k = 0; k < 4; k++) {
+      out[k * 4] = state[k] & 255;
+      out[k * 4 + 1] = (state[k] >> 8) & 255;
+      out[k * 4 + 2] = (state[k] >> 16) & 255;
+      out[k * 4 + 3] = (state[k] >> 24) & 255;
+    }
+    return out;
+  }
+
+  function sfMsgDigest(msgData, timestamp, checkWord) {
+    const bytes = md5Bytes(String(msgData) + String(timestamp) + String(checkWord));
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin);
+  }
+
+  function applyPresetConfig() {
+    const preset = window.__qfSfFeePreset;
+    if (!preset || typeof preset !== 'object') return;
+    let prev = {};
+    try { prev = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { /* ignore */ }
+    const merged = { ...prev, ...preset };
+    Object.keys(preset).forEach((k) => { merged[k] = preset[k]; });
+    merged.sandbox = Boolean(preset.sandbox);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+  }
+
+  function loadConfig() {
+    applyPresetConfig();
+    try {
+      return {
+        partnerID: '',
+        checkWord: '',
+        checkWordSandbox: '',
+        sandbox: false,
+        phoneLast4: '',
+        monthlyCard: '',
+        ...JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'),
+      };
+    } catch {
+      return {
+        partnerID: '', checkWord: '', checkWordSandbox: '', sandbox: false, phoneLast4: '', monthlyCard: '',
+      };
+    }
+  }
+
+  function resolveCheckWord(cfg) {
+    if (cfg.sandbox) return String(cfg.checkWordSandbox || '').trim();
+    return String(cfg.checkWord || '').trim();
+  }
+
+  function feeCacheKey(cfg, expressNo) {
+    const mode = cfg.sandbox ? 'sbox' : 'prod';
+    const partner = String(cfg.partnerID || '').trim();
+    const card = String(cfg.monthlyCard || '').trim();
+    return `${mode}:${partner}:${card}:${String(expressNo || '').trim().toUpperCase()}`;
+  }
+
+  function buildSfWaybillMsgData(cfg, expressNo) {
+    const payload = { trackingType: '2', trackingNum: String(expressNo || '').trim() };
+    const phone = String(cfg.phoneLast4 || '').trim();
+    if (phone) payload.phone = phone;
+    const card = String(cfg.monthlyCard || '').trim();
+    if (card) payload.monthlyCard = card;
+    return JSON.stringify(payload);
+  }
+
+  function detailCacheKey(packageId) {
+    return `${activeSessionKey || 'none'}:${String(packageId || '').trim()}`;
+  }
+
+  function stableKey(packageId) {
+    return `${activeSessionKey || 'none'}:${String(packageId || '').trim()}`;
+  }
+
+  function renderCacheKey(packageId) {
+    return stableKey(packageId);
+  }
+
+  function isLikelyPackageId(no) {
+    return /^P\d{10,}$/i.test(normalizeExpressNo(no));
+  }
+
+  function isLikelyExpressNo(no) {
+    const n = normalizeExpressNo(no);
+    if (!n || n.length < 8 || isLikelyPackageId(n)) return false;
+    return isSfExpressNo(n) || /^[A-Z]{2,4}\d{8,}$/.test(n) || /^\d{12,15}$/.test(n);
+  }
+
+  function isSfExpressNo(no) {
+    return /^SF\d{10,}$/i.test(String(no || '').trim());
+  }
+
+  function normalizeExpressNo(no) {
+    return String(no || '').trim().toUpperCase();
+  }
+
+  function pickRawExpressNo(...values) {
+    for (const value of values) {
+      const n = normalizeExpressNo(value);
+      if (n.length >= 8 && isLikelyExpressNo(n)) return n;
+    }
+    return '';
+  }
+
+  function extractRawExpressFromCard(card) {
+    if (!card) return '';
+    const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+    const logistics = card.querySelector('.delivery-row-logistics, .logistics-box');
+    const logisticsText = (logistics?.innerText || '').replace(/\s+/g, ' ');
+    if (logisticsText) {
+      const m = logisticsText.match(/\b(SF\d{10,}|[A-Z]{2,4}\d{8,}|\d{12,15})\b/i);
+      if (m && isLikelyExpressNo(m[1])) return normalizeExpressNo(m[1]);
+    }
+    const cardText = (card.innerText || '').replace(/\s+/g, ' ');
+    const matches = cardText.match(/\b(SF\d{10,}|[A-Z]{2,4}\d{8,})\b/gi) || [];
+    for (const candidate of matches) {
+      const n = normalizeExpressNo(candidate);
+      if (n && n !== normalizeExpressNo(packageId) && isLikelyExpressNo(n)) return n;
+    }
+    return '';
+  }
+
+  function pickRawExpressFromPackageDetail(data) {
+    if (!data || typeof data !== 'object') return '';
+    let raw = pickRawExpressNo(
+      data.express_number, data.express_no, data.expressNo, data.ship_express_no,
+    );
+    if (raw) return raw;
+    if (Array.isArray(data.delivery_packages)) {
+      for (const dp of data.delivery_packages) {
+        if (!dp) continue;
+        raw = pickRawExpressNo(dp.express_no, dp.express_number, dp.expressNo);
+        if (raw) return raw;
+      }
+    }
+    return '';
+  }
+
+  function isNonSfExpress(rawExpress) {
+    const no = normalizeExpressNo(rawExpress);
+    return Boolean(no) && !isSfExpressNo(no);
+  }
+
+  function parseMoneyYuan(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const s = String(value).replace(/[,，]/g, '').trim();
+    const m = s.match(/(\d+(?:\.\d{1,2})?)/);
+    return m ? Number(m[1]) : null;
+  }
+
+  function esc(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function normalizeAfterSale(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const refundApplyAmount = parseMoneyYuan(
+      raw.refundApplyAmount ?? raw.apply_amount ?? raw.applyAmount
+      ?? raw.returns_apply_amount ?? raw.refund_apply_amount ?? raw.request_amount,
+    );
+    const refundActualAmount = parseMoneyYuan(
+      raw.refundActualAmount ?? raw.refund_amount ?? raw.refundAmount
+      ?? raw.actual_refund_amount ?? raw.refunded_amount ?? raw.return_amount,
+    );
+    const status = String(raw.status || raw.status_name || raw.returns_status || '').trim();
+    const type = String(raw.type || raw.returns_type || raw.return_type || '').trim();
+    if (!status && !type && refundApplyAmount == null && refundActualAmount == null) return null;
+    const paidAmount = parseMoneyYuan(raw.paidAmount ?? raw.customer_pay_amount ?? raw.customerPayAmount);
+    return { type, status, refundApplyAmount, refundActualAmount, paidAmount };
+  }
+
+  function pickAfterSaleFromData(data) {
+    if (!data || typeof data !== 'object') return null;
+
+    if (Array.isArray(data.return_info)) {
+      for (const item of data.return_info) {
+        if (!item || typeof item !== 'object') continue;
+        const normalized = normalizeAfterSale({
+          type: item.type || item.return_type || item.returns_type,
+          status: item.status_str || item.status || item.status_name,
+          apply_amount: item.apply_amount ?? item.applyAmount ?? item.returns_apply_amount
+            ?? item.refund_apply_amount ?? item.request_amount,
+          refund_amount: item.return_amt ?? item.refund_amount ?? item.refundAmount
+            ?? item.actual_refund_amount ?? item.refunded_amount,
+        });
+        if (normalized?.refundApplyAmount != null || normalized?.refundActualAmount != null) {
+          normalized.fromReturnInfo = true;
+          return normalized;
+        }
+      }
+    }
+
+    const lists = [
+      data.returnInfo, data.returns_info, data.refund_info, data.after_sale_info,
+      data.returns_list, data.return_list, data.after_sale_list, data.refund_list,
+    ];
+    for (const list of lists) {
+      const arr = Array.isArray(list) ? list : (list && typeof list === 'object' ? [list] : []);
+      for (const item of arr) {
+        if (!item || typeof item !== 'object') continue;
+        const normalized = normalizeAfterSale({
+          type: item.returns_type || item.return_type || item.type || item.after_sale_type,
+          status: item.status_name || item.status || item.returns_status || item.after_sale_status,
+          apply_amount: item.apply_amount ?? item.applyAmount ?? item.returns_apply_amount
+            ?? item.refund_apply_amount ?? item.request_amount ?? item.refund_apply_price,
+          refund_amount: item.refund_amount ?? item.refundAmount ?? item.actual_refund_amount
+            ?? item.refunded_amount ?? item.return_amount ?? item.refund_price ?? item.return_amt,
+        });
+        if (normalized?.refundApplyAmount != null || normalized?.refundActualAmount != null) return normalized;
+        if (normalized) return normalized;
+      }
+    }
+    return normalizeAfterSale({
+      type: data.returns_type || data.return_type || data.after_sale_type,
+      status: data.after_sale_status || data.csstatus || data.erp_status_str,
+      apply_amount: data.apply_amount ?? data.returns_apply_amount ?? data.refund_apply_amount,
+      refund_amount: data.refund_amount ?? data.actual_refund_amount ?? data.refunded_amount,
+    });
+  }
+
+  function pickAfterSaleFromPackageDetail(data) {
+    const direct = pickAfterSaleFromData(data);
+    if (resolveRefundApplyAmount(direct)) return direct;
+
+    const pay = parseMoneyYuan(data.customer_pay_amount ?? data.customerPayAmount);
+    const sku = Array.isArray(data.sku_snapshots) ? data.sku_snapshots[0] : null;
+    const skuPay = parseMoneyYuan(sku?.sku_pay_amount ?? sku?.total_price);
+    const hasReturnSignal = Boolean(
+      (Array.isArray(data.return_info) && data.return_info.length)
+      || sku?.return_type
+      || /退|售后|关闭/.test(String(data.erp_status_str || sku?.status_name || '')),
+    );
+    if (!hasReturnSignal) return direct;
+
+    const applyAmount = skuPay ?? pay;
+    if (applyAmount == null) return direct;
+
+    return normalizeAfterSale({
+      type: sku?.return_type ? '退货' : '售后',
+      status: sku?.status_name || data.erp_status_str || direct?.status || '',
+      refundApplyAmount: applyAmount,
+      paidAmount: pay,
+      pendingRefund: true,
+    }) || direct;
+  }
+
+  function resolveRefundApplyAmount(afterSale) {
+    if (!afterSale) return null;
+    return afterSale.refundApplyAmount ?? null;
+  }
+
+  function resolveRefundDisplayAmount(afterSale) {
+    const apply = resolveRefundApplyAmount(afterSale);
+    if (apply != null) return apply;
+    if (afterSale?.refundActualAmount != null) return afterSale.refundActualAmount;
+    return null;
+  }
+
+  function resolvePaidAmount(card, afterSale, packageDetail) {
+    const fromApi = packageDetail?.paidAmount ?? afterSale?.paidAmount;
+    if (fromApi != null) return fromApi;
+    const { payEl } = findQtyAndPayAnchors(card);
+    if (payEl) {
+      const t = payEl.textContent || '';
+      const m = t.match(/[¥￥]\s*(\d+(?:\.\d{1,2})?)/);
+      if (m) return parseMoneyYuan(m[1]);
+    }
+    return null;
+  }
+
+  function assessRefundWarning(paidAmount, applyAmount) {
+    if (paidAmount == null || applyAmount == null) {
+      return { rowKind: '', suffix: '', title: '' };
+    }
+    if (Math.abs(applyAmount - paidAmount) <= MONEY_EPS) {
+      return {
+        rowKind: 'warn-full',
+        suffix: '[警告]',
+        title: '申请退款金额与实付一致，买家可能连运费一并申请退款',
+      };
+    }
+    if (applyAmount < paidAmount - MONEY_EPS) {
+      return {
+        rowKind: 'ok-normal',
+        suffix: '',
+        title: `实付 ${paidAmount.toFixed(2)} 元，申请 ${applyAmount.toFixed(2)} 元，未退运费部分`,
+      };
+    }
+    return { rowKind: '', suffix: '', title: '' };
+  }
+
+  function refundDisplayMeta(afterSale, paidAmount) {
+    const applyOnly = resolveRefundApplyAmount(afterSale);
+    const warn = applyOnly != null
+      ? assessRefundWarning(paidAmount, applyOnly)
+      : { rowKind: '', suffix: '', title: '' };
+    const parts = [];
+    if (afterSale?.fromReturnInfo && afterSale?.refundApplyAmount != null) {
+      parts.push('来自订单 API return_info');
+    } else if (afterSale?.pendingRefund) {
+      parts.push('售后进行中，显示申请参考金额');
+    } else if (afterSale?.refundApplyAmount != null) {
+      parts.push('来自订单 API 申请金额');
+    } else if (afterSale?.refundActualAmount != null) {
+      parts.push('无申请金额，显示已退金额');
+    }
+    if (warn.title) parts.push(warn.title);
+    return { title: parts.join(' · '), ...warn };
+  }
+
+  function cardBlocksSig(blocks) {
+    return JSON.stringify((blocks || []).map((b) => [b.label, b.text, b.kind, b.rowKind || '', b.title || '']));
+  }
+
+  function findCardByPackageId(packageId) {
+    const pid = String(packageId || '').trim();
+    if (!pid) return null;
+    const root = orderPanelRoot();
+    if (!root) return null;
+    for (const card of root.querySelectorAll('.order-card')) {
+      const id = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+      if (id === pid) return card;
+    }
+    return null;
+  }
+
+  function mergePackageDetailCache(packageId, parsed) {
+    const ck = detailCacheKey(packageId);
+    const prev = packageDetailCache.get(ck) || { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null };
+    return {
+      expressNos: parsed.expressNos?.length ? parsed.expressNos : prev.expressNos,
+      rawExpress: parsed.rawExpress || prev.rawExpress || '',
+      afterSale: mergeAfterSalePreferApi(prev.afterSale, parsed.afterSale),
+      paidAmount: parsed.paidAmount ?? prev.paidAmount,
+    };
+  }
+
+  function cacheDetailImproved(prev, merged) {
+    if (!prev) return true;
+    if (merged.expressNos?.length && !prev.expressNos?.length) return true;
+    if (merged.rawExpress && !prev.rawExpress) return true;
+    if (merged.paidAmount != null && prev.paidAmount == null) return true;
+    const p = prev.afterSale;
+    const m = merged.afterSale;
+    if (m?.refundApplyAmount != null && p?.refundApplyAmount == null) return true;
+    if (m?.refundActualAmount != null && p?.refundActualAmount == null) return true;
+    return false;
+  }
+
+  function ingestRefundJson(json) {
+    if (!json || typeof json !== 'object') return;
+    const data = json.data && typeof json.data === 'object' ? json.data : null;
+    if (!data) return;
+    const packageId = String(data.package_id || data.packageId || '').trim();
+    if (!packageId) return;
+    const parsed = parsePackageDetail(data);
+    const ck = detailCacheKey(packageId);
+    const prev = packageDetailCache.get(ck);
+    const merged = mergePackageDetailCache(packageId, parsed);
+    const improved = cacheDetailImproved(prev, merged);
+    if (!improved && cardStableKeys.has(stableKey(packageId))) return;
+    packageDetailCache.set(ck, merged);
+    packageDetailFetchedAt.set(ck, Date.now());
+    scheduleScan();
+  }
+
+  function hookFetchForRefund() {
+    unhookFetch();
+    window.__qsfInlineNativeFetch = window.fetch.bind(window);
+    const orig = window.__qsfInlineNativeFetch;
+    window.__qsfInlineFetchHooked = true;
+    window.fetch = async function qsfInlineFetchHook(...args) {
+      const res = await orig(...args);
+      try {
+        const input = args[0];
+        const u = typeof input === 'string' ? input : (input && input.url) || '';
+        if (isPackageDetailUrl(u)) {
+          res.clone().json().then((json) => ingestRefundJson(json)).catch(() => {});
+        }
+      } catch { /* ignore */ }
+      return res;
+    };
+  }
+
+  function cardHasAfterSaleSignals(card) {
+    if (!card) return false;
+    if (card.querySelector(
+      '.after-sale-box, .sku-after-sale, .sku-after-sale-status, [class*="after-sale"], [class*="after_sale"]',
+    )) return true;
+    return /退款|退货|换货|售后/.test(card.innerText || '');
+  }
+
+  function extractAfterSaleFromCard(card) {
+    if (!card) return null;
+    const box = card.querySelector('.after-sale-box, .sku-after-sale');
+    const text = (box || card).innerText || card.innerText || '';
+    if (!box && !cardHasAfterSaleSignals(card)) return null;
+    const statusText = (card.querySelector('.sku-after-sale-status')?.textContent || '').trim();
+    const refundApplyMatch = text.match(/申请金额\s*[¥￥]?\s*(\d+(?:\.\d{1,2})?)/);
+    const refundDoneMatch = text.match(/(\d+(?:\.\d{1,2})?)元已退款成功/);
+    return normalizeAfterSale({
+      type: (statusText.match(/(退货|退款|换货)/) || text.match(/(退货|退款|换货)/))?.[1] || '售后',
+      status: statusText,
+      refundApplyAmount: refundApplyMatch ? refundApplyMatch[1] : null,
+      refundActualAmount: refundDoneMatch ? refundDoneMatch[1] : null,
+    });
+  }
+
+  function mergeAfterSalePreferApi(domSale, apiSale) {
+    if (!domSale && !apiSale) return null;
+    if (!domSale) return apiSale;
+    if (!apiSale) return domSale;
+    return {
+      ...domSale,
+      ...apiSale,
+      refundApplyAmount: apiSale.refundApplyAmount ?? domSale.refundApplyAmount,
+      refundActualAmount: apiSale.refundActualAmount ?? domSale.refundActualAmount,
+      paidAmount: apiSale.paidAmount ?? domSale.paidAmount,
+      pendingRefund: apiSale.pendingRefund ?? domSale.pendingRefund,
+      fromReturnInfo: apiSale.fromReturnInfo ?? domSale.fromReturnInfo,
+    };
+  }
+
+  function formatYuan(n) {
+    const v = Number(n);
+    return Number.isFinite(v) ? `${v.toFixed(2)}元` : '—';
+  }
+
+  function calcCompanyProfit(paidAmount, applyAmount, sfFee) {
+    const paid = Number(paidAmount);
+    const apply = Number(applyAmount);
+    const fee = Number(sfFee);
+    if (!Number.isFinite(paid) || !Number.isFinite(apply) || !Number.isFinite(fee)) return null;
+    return paid - apply - fee;
+  }
+
+  function buildProfitBlock(paidAmount, applyAmount, sfFee, rowKind) {
+    if (rowKind === 'warn-full') return null;
+    if (applyAmount == null) return null;
+    const profit = calcCompanyProfit(paidAmount, applyAmount, sfFee);
+    if (profit == null) return null;
+    if (profit < -MONEY_EPS) {
+      return {
+        label: '',
+        text: `损耗${Math.abs(profit).toFixed(2)}元`,
+        kind: 'profit',
+        title: `实付 ${Number(paidAmount).toFixed(2)} - 申请退 ${Number(applyAmount).toFixed(2)} - 月结 ${Number(sfFee).toFixed(2)} = ${profit.toFixed(2)} 元`,
+      };
+    }
+    return {
+      label: '',
+      text: `赚到${profit.toFixed(2)}元`,
+      kind: 'profit',
+      title: `实付 ${Number(paidAmount).toFixed(2)} - 申请退 ${Number(applyAmount).toFixed(2)} - 月结 ${Number(sfFee).toFixed(2)} = ${profit.toFixed(2)} 元`,
+    };
+  }
+
+  function stampFeeCache(fee) {
+    return { ...fee, cachedAt: Date.now() };
+  }
+
+  async function querySfWaybillFee(expressNo, cfg) {
+    const no = String(expressNo || '').trim().toUpperCase();
+    if (!no) return { ok: false, error: '缺少运单号' };
+    if (!isSfExpressNo(no)) return { ok: false, skipped: true, error: '非顺丰运单' };
+    const ck = feeCacheKey(cfg, no);
+    if (expressCache.has(ck)) {
+      const cached = expressCache.get(ck);
+      if (cached.ok || cached.skipped || cached.apiCode === 'A1004' || cached.apiCode === '8152') return cached;
+      if (cached.cachedAt && Date.now() - cached.cachedAt < SF_ERR_CACHE_TTL_MS) return cached;
+      expressCache.delete(ck);
+    }
+    if (sfFeeInflight.has(ck)) return sfFeeInflight.get(ck);
+
+    const job = (async () => {
+      if (!cfg.partnerID || !resolveCheckWord(cfg)) {
+        return { ok: false, error: '未配置丰桥 partnerID / checkWord' };
+      }
+      if (!cfg.sandbox && !String(cfg.monthlyCard || '').trim()) {
+        return { ok: false, error: '未配置月结卡号', apiCode: '8151' };
+      }
+      const msgData = buildSfWaybillMsgData(cfg, no);
+      const timestamp = Date.now();
+      const body = new URLSearchParams({
+        partnerID: cfg.partnerID,
+        requestID: uuid(),
+        serviceCode: 'EXP_RECE_QUERY_SFWAYBILL',
+        timestamp: String(timestamp),
+        msgDigest: sfMsgDigest(msgData, timestamp, resolveCheckWord(cfg)),
+        msgData,
+      });
+      try {
+        const res = await fetch(cfg.sandbox ? SF_SBOX : SF_PROD, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+          body: body.toString(),
+        });
+        const outer = JSON.parse(await res.text());
+        const outerCode = String(outer.apiResultCode || '').trim();
+        if (outerCode && outerCode !== 'A1000') {
+          const result = stampFeeCache({ ok: false, error: outer.apiErrorMsg || '查询失败', apiCode: outerCode });
+          if (outerCode !== 'A1006') expressCache.set(ck, result);
+          return result;
+        }
+        let inner = outer;
+        if (typeof outer.apiResultData === 'string') {
+          try { inner = JSON.parse(outer.apiResultData); } catch { inner = { success: false }; }
+        }
+        if (!inner.success && inner.success !== true) {
+          const apiCode = String(inner.errorCode || outer.apiResultCode || '');
+          let errMsg = inner.errorMsg || outer.apiErrorMsg || '查询失败';
+          if (apiCode === '8151') errMsg = '该运单未挂月结卡';
+          if (apiCode === '8148') errMsg = '丰桥无该运单扣费';
+          const result = stampFeeCache({ ok: false, error: errMsg, apiCode });
+          expressCache.set(ck, result);
+          return result;
+        }
+        const data = inner.msgData || inner;
+        const info = data.waybillInfo || {};
+        const fees = data.waybillFeeList || [];
+        const total = fees.reduce((s, f) => s + (Number(f.feeAmt ?? f.value) || 0), 0) || info.totalFee;
+        const result = stampFeeCache({ ok: true, totalFee: total, waybillNo: info.waybillNo || no });
+        expressCache.set(ck, result);
+        return result;
+      } catch (err) {
+        return { ok: false, error: String(err.message || err) };
+      }
+    })();
+
+    sfFeeInflight.set(ck, job);
+    try {
+      return await job;
+    } finally {
+      sfFeeInflight.delete(ck);
+    }
+  }
+
+  function orderPanelRoot() {
+    return document.querySelector('.order-tool-content')
+      || document.querySelector('.new-right-panel')
+      || document.querySelector('.order-tool-container')
+      || document.querySelector('.farmer-chat__right');
+  }
+
+  function extractExpressFromCard(card) {
+    if (!card) return [];
+    const found = new Set();
+    const add = (no) => {
+      const n = String(no || '').trim().toUpperCase();
+      if (isSfExpressNo(n)) found.add(n);
+    };
+    const logistics = card.querySelector('.delivery-row-logistics, .logistics-box');
+    if (logistics) {
+      const m = (logistics.innerText || '').match(/\b(SF\d{10,})\b/gi);
+      if (m) m.forEach(add);
+    }
+    const text = card.innerText || '';
+    const all = text.match(/\b(SF\d{10,})\b/gi);
+    if (all) all.forEach(add);
+    return [...found];
+  }
+
+  function pickExpressFromPackageDetail(data) {
+    if (!data || typeof data !== 'object') return [];
+    const out = new Set();
+    const add = (no) => {
+      const n = String(no || '').trim().toUpperCase();
+      if (isSfExpressNo(n)) out.add(n);
+    };
+    add(data.express_number || data.express_no || data.expressNo || data.ship_express_no);
+    if (Array.isArray(data.delivery_packages)) {
+      for (const dp of data.delivery_packages) {
+        if (!dp) continue;
+        add(dp.express_no || dp.express_number || dp.expressNo);
+      }
+    }
+    return [...out];
+  }
+
+  function buildPackageDetailProxyUrl(packageId) {
+    const pid = encodeURIComponent(String(packageId || '').trim());
+    const port = Number(window.__qfPackageProxyPort || 4725);
+    const base = `http://127.0.0.1:${port}`;
+    const shopTitle = String(document.title || '').replace(/-工作台\s*$/, '').trim();
+    if (shopTitle) return `${base}/package-detail?packageId=${pid}&shopTitle=${encodeURIComponent(shopTitle)}`;
+    return `${base}/package-detail?packageId=${pid}`;
+  }
+
+  function parsePackageDetail(data) {
+    if (!data || typeof data !== 'object') {
+      return { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null };
+    }
+    const expressNos = pickExpressFromPackageDetail(data);
+    const rawExpress = pickRawExpressFromPackageDetail(data);
+    const afterSale = pickAfterSaleFromPackageDetail(data);
+    const sku = Array.isArray(data.sku_snapshots) ? data.sku_snapshots[0] : null;
+    const paidAmount = parseMoneyYuan(data.customer_pay_amount ?? data.customerPayAmount)
+      ?? parseMoneyYuan(sku?.sku_pay_amount ?? sku?.total_price);
+    return { expressNos, rawExpress, afterSale, paidAmount };
+  }
+
+  async function fetchPackageDetailFromApi(packageId, force = false) {
+    const pid = String(packageId || '').trim();
+    if (!pid) return { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null };
+
+    const ck = detailCacheKey(pid);
+    const sk = stableKey(pid);
+    if (cardStableKeys.has(sk) && !force) {
+      return packageDetailCache.get(ck) || { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null };
+    }
+
+    const cached = packageDetailCache.get(ck);
+    const lastAt = packageDetailFetchedAt.get(ck) || 0;
+    if (!force && cached && Date.now() - lastAt < PKG_DETAIL_COOLDOWN_MS) return cached;
+
+    const inflightKey = `${activeSessionKey}:${pid}`;
+    if (packageDetailInflight.has(inflightKey)) return packageDetailInflight.get(inflightKey);
+
+    const job = (async () => {
+      if (!force && !packageDetailCache.has(ck)) {
+        await waitForPackageCache(pid);
+        const hooked = packageDetailCache.get(ck);
+        if (hooked) return hooked;
+      }
+      try {
+        const res = await fetch(buildPackageDetailProxyUrl(pid));
+        const envelope = await res.json().catch(() => null);
+        if (envelope?.ok && envelope.data) {
+          const parsed = parsePackageDetail(envelope.data);
+          packageDetailFetchedAt.set(ck, Date.now());
+          packageDetailCache.set(ck, parsed);
+          return parsed;
+        }
+      } catch { /* ignore */ }
+      return { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null };
+    })();
+
+    packageDetailInflight.set(inflightKey, job);
+    try {
+      return await job;
+    } finally {
+      packageDetailInflight.delete(inflightKey);
+    }
+  }
+
+  function findQtyAndPayAnchors(card) {
+    const scopes = [
+      card.querySelector('.order-card-footer, .order-footer, [class*="card-footer"], [class*="order-bottom"]'),
+      card,
+    ].filter(Boolean);
+    let qtyEl = null;
+    let payEl = null;
+    let qtyScore = Infinity;
+    let payScore = Infinity;
+    for (const scope of scopes) {
+      for (const el of scope.querySelectorAll('div, span, p')) {
+        if (el.closest('.qsf-inline-fee-wrap')) continue;
+        const t = normText(el.textContent);
+        if (!t || t.length > 80) continue;
+        if (/共\s*\d+\s*件/.test(t) && !/(实付|应付)/.test(t) && t.length < qtyScore) {
+          qtyScore = t.length;
+          qtyEl = el;
+        }
+        if (/(实付|应付)/.test(t) && (/[¥￥]/.test(t) || /\d+(?:\.\d{1,2})?/.test(t)) && t.length < payScore) {
+          payScore = t.length;
+          payEl = el;
+        }
+      }
+      if (qtyEl && payEl) break;
+    }
+    return { qtyEl, payEl };
+  }
+
+  function insertWrapBetweenAnchors(card, wrap) {
+    const { qtyEl, payEl } = findQtyAndPayAnchors(card);
+    if (qtyEl && payEl && qtyEl.parentElement === payEl.parentElement) {
+      const parent = qtyEl.parentElement;
+      if (qtyEl.compareDocumentPosition(payEl) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        parent.insertBefore(wrap, payEl);
+      } else {
+        parent.insertBefore(wrap, qtyEl.nextSibling);
+      }
+      return true;
+    }
+    if (payEl?.parentElement) {
+      payEl.parentElement.insertBefore(wrap, payEl);
+      return true;
+    }
+    if (qtyEl?.parentElement) {
+      qtyEl.parentElement.insertBefore(wrap, qtyEl.nextSibling);
+      return true;
+    }
+    return false;
+  }
+
+  function repositionFeeWrap(card, wrap) {
+    insertWrapBetweenAnchors(card, wrap);
+  }
+
+  function ensureFeeWrap(card) {
+    let wrap = card.querySelector('.qsf-inline-fee-wrap');
+    const isNew = !wrap;
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.className = 'qsf-inline-fee-wrap';
+      wrap.setAttribute('data-qsf-inline', VERSION);
+    }
+
+    if (!insertWrapBetweenAnchors(card, wrap) && isNew) {
+      const header = card.querySelector('.order-card-header');
+      if (header?.parentElement) {
+        header.parentElement.insertBefore(wrap, header.nextSibling);
+      } else {
+        card.appendChild(wrap);
+      }
+    }
+    return wrap;
+  }
+
+  function renderCardInfo(wrap, blocks) {
+    if (!wrap || !blocks?.length) return;
+    const rowKind = blocks.find((b) => b.rowKind)?.rowKind
+      || (blocks.some((b) => b.kind === 'loading') ? 'loading' : '');
+    const rowCls = [
+      'qsf-inline-fee-row',
+      rowKind === 'warn-full' ? 'qsf-inline-warn-full' : '',
+      rowKind === 'ok-normal' ? 'qsf-inline-ok-normal' : '',
+      rowKind === 'loading' ? 'qsf-inline-fee-loading' : '',
+    ].filter(Boolean).join(' ');
+    const title = blocks.map((b) => b.title).filter(Boolean).join(' · ');
+    const segs = blocks.map((block) => {
+      const segCls = [
+        'qsf-inline-seg',
+        block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
+        block.kind === 'refund' && !block.rowKind ? 'qsf-inline-refund' : '',
+        block.kind === 'profit' ? 'qsf-inline-profit' : '',
+      ].filter(Boolean).join(' ');
+      if (block.kind === 'profit' || !block.label) {
+        return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${block.text}</span></span>`;
+      }
+      return `<span class="${segCls}"><span class="qsf-inline-fee-label">${block.label}</span><span class="qsf-inline-fee-amount">${block.text}</span></span>`;
+    }).join('<span class="qsf-inline-gap"></span>');
+    wrap.innerHTML = `<div class="${rowCls}"${title ? ` title="${esc(title)}"` : ''}>${segs}</div>`;
+  }
+
+  async function refreshCard(card, opts = {}) {
+    const gen = sessionGeneration;
+    const silent = opts.silent === true;
+    const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+    if (!packageId || !card.isConnected) return;
+    const jobKey = `${activeSessionKey}:${packageId}`;
+    if (cardJobs.get(jobKey) === 'running') return;
+    cardJobs.set(jobKey, 'running');
+
+    const wrap = ensureFeeWrap(card);
+    const hasAfterSale = cardHasAfterSaleSignals(card);
+    const cachedRender = cardRenderCache.get(renderCacheKey(packageId));
+
+    if (!silent && !cachedRender) {
+      renderCardInfo(wrap, [
+        { label: '月结费用：', text: '查询中…', kind: 'loading' },
+        ...(hasAfterSale ? [{ label: '用户申请退款金额：', text: '查询中…', kind: 'loading' }] : []),
+      ]);
+    }
+
+    try {
+      if (isSessionStale(gen)) return;
+
+      let expressNos = extractExpressFromCard(card);
+      let rawExpress = extractRawExpressFromCard(card);
+      let afterSale = extractAfterSaleFromCard(card);
+      let paidAmount = null;
+      const detailCk = detailCacheKey(packageId);
+      const cachedDetail = packageDetailCache.get(detailCk);
+      if (cachedDetail) {
+        if (cachedDetail.expressNos?.length && !expressNos.length) expressNos = cachedDetail.expressNos;
+        if (cachedDetail.rawExpress && !rawExpress) rawExpress = cachedDetail.rawExpress;
+        afterSale = mergeAfterSalePreferApi(afterSale, cachedDetail.afterSale);
+        paidAmount = cachedDetail.paidAmount ?? null;
+      }
+
+      let needApi = !packageDetailCache.has(detailCk) || opts.forceApi === true;
+      if (needApi && !opts.forceApi) {
+        await waitForPackageCache(packageId);
+        if (isSessionStale(gen)) return;
+        needApi = !packageDetailCache.has(detailCk);
+      }
+
+      if (needApi) {
+        const detail = await fetchPackageDetailFromApi(packageId, opts.forceApi === true);
+        if (isSessionStale(gen)) return;
+        if (detail?.expressNos?.length) expressNos = detail.expressNos;
+        if (detail?.rawExpress && !rawExpress) rawExpress = detail.rawExpress;
+        afterSale = mergeAfterSalePreferApi(afterSale, detail?.afterSale || null);
+        paidAmount = detail?.paidAmount ?? paidAmount;
+      }
+      if (!rawExpress) rawExpress = extractRawExpressFromCard(card);
+      paidAmount = resolvePaidAmount(card, afterSale, { paidAmount });
+
+      const blocks = [];
+      const cfg = loadConfig();
+      let sfFeeTotal = null;
+      const nonSfExpress = isNonSfExpress(rawExpress);
+
+      if (nonSfExpress) {
+        blocks.push({ label: '月结费用：', text: '非顺丰', kind: 'muted', title: `运单 ${rawExpress}` });
+      } else if (!expressNos.length) {
+        blocks.push({ label: '月结费用：', text: '查询中…', kind: 'loading' });
+      } else {
+        let feeFallback = null;
+        for (const no of expressNos) {
+          if (isSessionStale(gen)) return;
+          const fee = await querySfWaybillFee(no, cfg);
+          if (isSessionStale(gen)) return;
+          if (fee.ok && Number.isFinite(Number(fee.totalFee))) {
+            sfFeeTotal = (sfFeeTotal ?? 0) + Number(fee.totalFee);
+          } else if (!feeFallback) {
+            feeFallback = fee;
+          }
+        }
+        if (sfFeeTotal != null) {
+          blocks.push({ label: '月结费用：', text: formatYuan(sfFeeTotal) });
+        } else if (feeFallback?.skipped) {
+          blocks.push({ label: '月结费用：', text: '非顺丰', kind: 'muted' });
+        } else {
+          blocks.push({
+            label: '月结费用：',
+            text: '—',
+            kind: 'muted',
+            title: feeFallback?.error || '查询失败',
+          });
+        }
+      }
+
+      const refundApplyAmt = resolveRefundApplyAmount(afterSale);
+      const refundDisplayAmt = resolveRefundDisplayAmount(afterSale);
+      const sk = stableKey(packageId);
+      if (hasAfterSale || refundDisplayAmt != null || afterSale) {
+        if (refundDisplayAmt != null) {
+          const meta = refundDisplayMeta(afterSale, paidAmount);
+          blocks.push({
+            label: '用户申请退款金额：',
+            text: `${formatYuan(refundDisplayAmt)}${meta.suffix}`,
+            kind: 'refund',
+            rowKind: meta.rowKind,
+            title: meta.title,
+          });
+          const profitBlock = buildProfitBlock(paidAmount, refundApplyAmt, sfFeeTotal, meta.rowKind);
+          if (profitBlock) blocks.push(profitBlock);
+        } else {
+          blocks.push({ label: '用户申请退款金额：', text: '—', kind: 'muted' });
+        }
+      }
+
+      if (!blocks.length) {
+        blocks.push({ label: '月结费用：', text: '—', kind: 'muted', title: '无扣费数据' });
+      }
+
+      if (isSessionStale(gen)) return;
+
+      const sig = cardBlocksSig(blocks);
+      const hasLoading = blocks.some((b) => b.kind === 'loading' || b.text === '查询中…');
+      if (cachedRender?.sig !== sig) {
+        cardRenderCache.set(renderCacheKey(packageId), { sig, blocks });
+        renderCardInfo(wrap, blocks);
+      } else if (!wrap.querySelector('.qsf-inline-fee-row')) {
+        renderCardInfo(wrap, blocks);
+      }
+      if (!hasLoading && (expressNos.length || nonSfExpress) && (!hasAfterSale || refundDisplayAmt != null)) {
+        cardStableKeys.add(sk);
+      }
+
+      const retries = cardRetryCount.get(packageId) || 0;
+      const shouldRetryExpress = !nonSfExpress && !hasLoading && !expressNos.length && !cardStableKeys.has(sk)
+        && card.isConnected && retries < MAX_CARD_RETRY;
+      if (shouldRetryExpress) {
+        cardRetryCount.set(packageId, retries + 1);
+        cardJobs.delete(jobKey);
+        const prevTimer = cardRetryTimers.get(packageId);
+        if (prevTimer) clearTimeout(prevTimer);
+        const timer = setTimeout(() => {
+          cardRetryTimers.delete(packageId);
+          if (isSessionStale(gen) || !card.isConnected) return;
+          void refreshCard(card, { silent: true, forceApi: retries >= 1 });
+        }, 1800 + retries * 1200);
+        cardRetryTimers.set(packageId, timer);
+        return;
+      }
+      cardRetryCount.delete(packageId);
+    } catch (err) {
+      if (!silent && !isSessionStale(gen)) {
+        renderCardInfo(wrap, [{
+          label: '月结费用：',
+          text: '—',
+          kind: 'muted',
+          title: String(err.message || err),
+        }]);
+      }
+    } finally {
+      cardJobs.delete(jobKey);
+    }
+  }
+
+  function scanOrderCards() {
+    syncSession();
+    const root = orderPanelRoot();
+    if (!root) return;
+    const cards = root.querySelectorAll('.order-card');
+    const activeIds = new Set();
+    cards.forEach((card) => {
+      const pid = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+      if (!pid) return;
+      activeIds.add(pid);
+      const sk = stableKey(pid);
+      const jobKey = `${activeSessionKey}:${pid}`;
+      if (cardJobs.get(jobKey) === 'running') return;
+      const wrap = card.querySelector('.qsf-inline-fee-wrap');
+      if (cardStableKeys.has(sk) && wrap) {
+        repositionFeeWrap(card, wrap);
+        return;
+      }
+      if (cardStableKeys.has(sk) && !wrap) {
+        cardStableKeys.delete(sk);
+      }
+      void refreshCard(card, { silent: Boolean(cardRenderCache.get(renderCacheKey(pid)) && wrap) });
+    });
+    for (const key of [...cardStableKeys]) {
+      const pid = key.includes(':') ? key.split(':').slice(1).join(':') : key;
+      if (!activeIds.has(pid)) cardStableKeys.delete(key);
+    }
+    root.querySelectorAll('.qsf-inline-fee-wrap').forEach((wrap) => {
+      const card = wrap.closest('.order-card');
+      if (!card) wrap.remove();
+    });
+  }
+
+  function scheduleScan() {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      scanOrderCards();
+    }, SCAN_DEBOUNCE_MS);
+  }
+
+  function bindOrderObserver() {
+    if (orderObs) orderObs.disconnect();
+    const root = orderPanelRoot();
+    if (!root) {
+      setTimeout(bindOrderObserver, 800);
+      return;
+    }
+    orderObs = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === 'childList') {
+          const nodes = [...(m.addedNodes || []), ...(m.removedNodes || [])];
+          const relevant = nodes.some((n) => {
+            if (n.nodeType !== 1) return n.parentElement && !n.parentElement.closest?.('.qsf-inline-fee-wrap');
+            return !n.classList?.contains?.('qsf-inline-fee-wrap') && !n.closest?.('.qsf-inline-fee-wrap')
+              && (n.matches?.('.order-card, .order-card *') || n.querySelector?.('.order-card'));
+          });
+          if (relevant) {
+            scheduleScan();
+            return;
+          }
+        } else if (m.type === 'attributes' && m.target?.nodeType === 1) {
+          const t = m.target;
+          if (t.closest?.('.order-card') && !t.closest?.('.qsf-inline-fee-wrap')) {
+            scheduleScan();
+            return;
+          }
+        }
+      }
+    });
+    orderObs.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    scheduleScan();
+  }
+
+  function ensureStyles() {
+    const port = Number(window.__qfPackageProxyPort || 4725);
+    const fontBase = `http://127.0.0.1:${port}/fonts`;
+    let style = document.getElementById(STYLE_ID);
+    if (style && style.getAttribute('data-qsf-ver') === VERSION) return;
+    if (style) style.remove();
+    style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.setAttribute('data-qsf-ver', VERSION);
+    style.textContent = `
+      @font-face {
+        font-family: 'HarmonyOS Sans SC';
+        src: url('${fontBase}/HarmonyOS_SansSC_Regular.ttf') format('truetype');
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: 'HarmonyOS Sans SC';
+        src: url('${fontBase}/HarmonyOS_SansSC_Medium.ttf') format('truetype');
+        font-weight: 600;
+        font-style: normal;
+        font-display: swap;
+      }
+      .qsf-inline-fee-wrap {
+        display: inline-flex;
+        flex-direction: row;
+        flex-wrap: nowrap;
+        align-items: baseline;
+        justify-content: flex-start;
+        gap: 0;
+        margin: 0 10px;
+        padding: 0 2px;
+        vertical-align: middle;
+        pointer-events: none;
+        flex: 0 0 auto;
+        white-space: nowrap;
+        font-family: 'HarmonyOS Sans SC', 'HarmonyOS Sans', sans-serif;
+      }
+      .qsf-inline-fee-row {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 0;
+        font-size: 14px;
+        line-height: 1.35;
+        color: #ff2442;
+        white-space: nowrap;
+        font-family: inherit;
+      }
+      .qsf-inline-seg { display: inline-flex; align-items: baseline; gap: 0; font-family: inherit; }
+      .qsf-inline-gap { display: inline-block; width: 6px; flex: 0 0 6px; }
+      .qsf-inline-fee-label { color: rgba(0,0,0,.65); font-weight: 400; font-family: inherit; margin: 0; padding: 0; }
+      .qsf-inline-fee-amount { font-weight: 600; color: #ff2442; font-family: inherit; margin: 0; padding: 0; }
+      .qsf-inline-refund .qsf-inline-fee-amount { color: #e6a23c; }
+      .qsf-inline-refund .qsf-inline-fee-label { color: rgba(0,0,0,.55); }
+      .qsf-inline-warn-full,
+      .qsf-inline-warn-full .qsf-inline-fee-label,
+      .qsf-inline-warn-full .qsf-inline-fee-amount {
+        color: #ff2442 !important;
+        font-weight: 600;
+      }
+      .qsf-inline-ok-normal,
+      .qsf-inline-ok-normal .qsf-inline-fee-label,
+      .qsf-inline-ok-normal .qsf-inline-fee-amount {
+        color: #389e0d !important;
+        font-weight: 600;
+      }
+      .qsf-inline-fee-loading { color: rgba(0,0,0,.45); font-size: 14px; font-family: inherit; }
+      .qsf-inline-fee-muted { color: rgba(0,0,0,.35); font-size: 14px; font-family: inherit; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function teardownLegacyPanel() {
+    try {
+      if (window.__qfSfFeePanel?.teardown) window.__qfSfFeePanel.teardown();
+    } catch { /* ignore */ }
+    document.querySelectorAll('#qf-sf-fee-panel-root').forEach((el) => el.remove());
+    document.getElementById('qf-sf-fee-panel-style')?.remove();
+    document.documentElement.classList.remove('qsf-page-docked');
+    document.body?.classList.remove('qsf-page-docked');
+    try { sessionStorage.removeItem('qsf_panel_pinned_v1'); } catch { /* ignore */ }
+    delete window.__qfSfFeePanel;
+    delete window.__qfSfExpandPanel;
+    delete window.__qfSfLauncherDragCleanup;
+  }
+
+  function ensureLegacyPanelWatchdog() {
+    if (window.__qsfLegacyPanelWatch) return;
+    window.__qsfLegacyPanelWatch = setInterval(() => {
+      if (document.getElementById('qf-sf-fee-panel-root') || window.__qfSfFeePanel) {
+        teardownLegacyPanel();
+      }
+    }, 1200);
+  }
+
+  function teardown() {
+    sessionGeneration += 1;
+    clearTimeout(scanTimer);
+    scanTimer = null;
+    clearCardRetryTimers();
+    if (orderObs) {
+      orderObs.disconnect();
+      orderObs = null;
+    }
+    unwatchSession();
+    document.querySelectorAll('.qsf-inline-fee-wrap').forEach((el) => el.remove());
+    document.getElementById(STYLE_ID)?.remove();
+    if (window.__qsfLegacyPanelWatch) {
+      clearInterval(window.__qsfLegacyPanelWatch);
+      delete window.__qsfLegacyPanelWatch;
+    }
+    unhookFetch();
+    expressCache.clear();
+    sfFeeInflight.clear();
+    packageDetailCache.clear();
+    packageDetailFetchedAt.clear();
+    packageDetailInflight.clear();
+    cardRenderCache.clear();
+    cardRetryCount.clear();
+    cardStableKeys.clear();
+    cardJobs.clear();
+    teardownLegacyPanel();
+    delete window.__qfSfFeeInline;
+  }
+
+  function boot() {
+    teardownLegacyPanel();
+    if (window.__qfSfFeeInline?.version === VERSION) {
+      ensureLegacyPanelWatchdog();
+      ensureStyles();
+      if (!window.__qsfInlineFetchHooked) hookFetchForRefund();
+      if (!sessionPollTimer) watchSession();
+      else syncSession();
+      if (!orderObs) bindOrderObserver();
+      else scheduleScan();
+      return;
+    }
+    if (window.__qfSfFeeInline?.teardown) window.__qfSfFeeInline.teardown();
+    teardownLegacyPanel();
+    ensureStyles();
+    hookFetchForRefund();
+    watchSession();
+    bindOrderObserver();
+    ensureLegacyPanelWatchdog();
+    window.__qfSfFeeInline = {
+      version: VERSION,
+      teardown,
+      rescan: scheduleScan,
+      syncSession,
+      getActiveSessionKey,
+    };
+    console.log(`[顺丰运费] 内嵌 v${VERSION} 已注入（订单卡常驻显示，切换会话自动停查）`);
+  }
+
+  boot();
+})();

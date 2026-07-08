@@ -1,76 +1,41 @@
-/** CDP 注入：优先热更新，必要时硬重注入并保留侧栏展开状态 */
+/** CDP 注入：优先热更新，必要时硬重注入 */
 
 const TEARDOWN_EXPR = `(function(){
   try {
-    if (window.__qfSfFeePanel?.teardown) window.__qfSfFeePanel.teardown();
+    if (window.__qfSfFeeInline?.teardown) window.__qfSfFeeInline.teardown();
+    else if (window.__qfSfFeePanel?.teardown) window.__qfSfFeePanel.teardown();
+    delete window.__qfSfFeeInline;
     delete window.__qfSfFeePanel;
-    document.getElementById('qf-sf-fee-panel-root')?.remove();
+    delete window.__qfSfExpandPanel;
+    delete window.__qfSfLauncherDragCleanup;
+    document.querySelectorAll('#qf-sf-fee-panel-root').forEach(function(el){ el.remove(); });
     document.getElementById('qf-sf-fee-panel-style')?.remove();
+    document.querySelectorAll('.qsf-inline-fee-wrap').forEach(function(el){ el.remove(); });
+    document.getElementById('qf-sf-fee-inline-style')?.remove();
     document.documentElement.classList.remove('qsf-page-docked');
     document.body?.classList.remove('qsf-page-docked');
+    try { sessionStorage.removeItem('qsf_panel_pinned_v1'); } catch (e) {}
     if (window.__qfSfFeeNativeFetch) window.fetch = window.__qfSfFeeNativeFetch;
+    if (window.__qsfInlineNativeFetch) window.fetch = window.__qsfInlineNativeFetch;
     if (window.__qfSfFeeNativeXhrOpen) XMLHttpRequest.prototype.open = window.__qfSfFeeNativeXhrOpen;
     if (window.__qfSfFeeNativeXhrSend) XMLHttpRequest.prototype.send = window.__qfSfFeeNativeXhrSend;
     delete window.__qfSfFeeFetchHooked;
     delete window.__qfSfFeeXhrHooked;
+    delete window.__qsfInlineFetchHooked;
+    delete window.__qsfInlineNativeFetch;
+    delete window.__qfSfFeeIconDataUrl;
+    delete window.__qsfLegacyPanelWatch;
   } catch (e) {}
 })()`;
 
-const CAPTURE_UI_EXPR = `(function(){
-  try {
-    var p = document.getElementById('qf-sf-fee-panel-root');
-    var pinned = sessionStorage.getItem('qsf_panel_pinned_v1') === '1';
-    var expanded = !!(p && p.classList.contains('qsf-expanded'));
-    return { pinned: pinned, expanded: expanded, keepOpen: pinned || expanded };
-  } catch (e) {
-    return { pinned: false, expanded: false, keepOpen: false };
-  }
-})()`;
-
-const RESTORE_EXPANDED_EXPR = `(function(){
-  try {
-    if (window.__qfSfExpandPanel) {
-      window.__qfSfExpandPanel();
-      return true;
-    }
-    var p = document.getElementById('qf-sf-fee-panel-root');
-    if (p) {
-      p.classList.remove('qsf-icon-only');
-      p.classList.add('qsf-expanded');
-    }
-    return !!p;
-  } catch (e) {
-    return false;
-  }
-})()`;
-
-const RESTORE_PINNED_EXPR = `(function(){
-  try {
-    sessionStorage.setItem('qsf_panel_pinned_v1', '1');
-    if (window.__qfSfExpandPanel) {
-      window.__qfSfExpandPanel();
-      return true;
-    }
-    var p = document.getElementById('qf-sf-fee-panel-root');
-    if (p) {
-      p.classList.remove('qsf-icon-only');
-      p.classList.add('qsf-expanded');
-    }
-    return !!p;
-  } catch (e) {
-    return false;
-  }
-})()`;
-
 const VERSION_PROBE_EXPR = `(function(){
-  var p = document.getElementById('qf-sf-fee-panel-root');
-  var ver = document.querySelector('#qf-sf-fee-panel-root .qsf-ver');
-  var footer = ver ? String(ver.textContent || '').trim() : '';
+  var inline = window.__qfSfFeeInline;
+  var panel = window.__qfSfFeePanel;
   return {
-    version: window.__qfSfFeePanel && window.__qfSfFeePanel.version,
-    hasPanel: !!p,
-    footerVersion: footer,
-    hasPatch: !!(window.__qfSfFeePanel && window.__qfSfFeePanel.patchVersionLabels),
+    version: inline && inline.version || panel && panel.version,
+    mode: inline ? 'inline' : (panel ? 'panel' : 'none'),
+    hasInline: !!inline,
+    hasLegacyPanel: !!document.getElementById('qf-sf-fee-panel-root'),
   };
 })()`;
 
@@ -87,36 +52,38 @@ async function softInjectPage(client, source, expectedVersion) {
   await evaluate(client, source, { awaitPromise: true });
   if (!expectedVersion) return true;
   const probe = await evaluate(client, `(function(){
-    var ver = document.querySelector('#qf-sf-fee-panel-root .qsf-ver');
+    var inline = window.__qfSfFeeInline;
     return {
-      version: window.__qfSfFeePanel && window.__qfSfFeePanel.version,
-      hasPanel: !!document.getElementById('qf-sf-fee-panel-root'),
-      footerVersion: ver ? String(ver.textContent || '').trim() : '',
-      hasPatch: !!(window.__qfSfFeePanel && window.__qfSfFeePanel.patchVersionLabels),
+      version: inline && inline.version,
+      mode: inline ? 'inline' : 'none',
+      hasInline: !!inline,
+      hasLegacyPanel: !!document.getElementById('qf-sf-fee-panel-root'),
     };
   })()`);
   const info = probe.result?.value || {};
-  const wantFooter = 'v' + expectedVersion;
-  return info.version === expectedVersion && info.hasPanel && info.footerVersion === wantFooter && info.hasPatch;
+  return info.version === expectedVersion && info.hasInline && !info.hasLegacyPanel;
+}
+
+async function clearRegisteredPageScripts(client) {
+  const { Page } = client;
+  if (typeof Page.removeScriptToEvaluateOnNewDocument !== 'function') return;
+  for (let i = 1; i <= 120; i += 1) {
+    try {
+      await Page.removeScriptToEvaluateOnNewDocument({ identifier: String(i) });
+    } catch {
+      /* ignore missing id */
+    }
+  }
 }
 
 async function hardInjectPage(client, source, options = {}) {
   const { Page } = client;
-  let keepOpen = false;
-  let wasPinned = false;
-  if (options.preserveUi !== false) {
-    const cap = await evaluate(client, CAPTURE_UI_EXPR);
-    wasPinned = Boolean(cap.result?.value?.pinned);
-    keepOpen = Boolean(cap.result?.value?.keepOpen);
-  }
+  await clearRegisteredPageScripts(client);
   await evaluate(client, TEARDOWN_EXPR);
   if (options.registerOnNewDocument) {
     await Page.addScriptToEvaluateOnNewDocument({ source });
   }
   await evaluate(client, source, { awaitPromise: true });
-  if (keepOpen) {
-    await evaluate(client, wasPinned ? RESTORE_PINNED_EXPR : RESTORE_EXPANDED_EXPR, { awaitPromise: true });
-  }
   return true;
 }
 
@@ -130,7 +97,7 @@ async function injectPage(client, source, options = {}) {
       /* fall through */
     }
   }
-  await hardInjectPage(client, source, { registerOnNewDocument, preserveUi: true });
+  await hardInjectPage(client, source, { registerOnNewDocument });
   return { mode: 'hard' };
 }
 
@@ -138,5 +105,7 @@ module.exports = {
   injectPage,
   softInjectPage,
   hardInjectPage,
+  clearRegisteredPageScripts,
   VERSION_PROBE_EXPR,
+  TEARDOWN_EXPR,
 };

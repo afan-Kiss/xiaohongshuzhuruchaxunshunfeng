@@ -15,7 +15,7 @@ const EXPR = `(function(){
     var days = ms ? ((Date.now()-ms)/86400000).toFixed(1) : null;
     return { id:id, apply:apply&&apply[1], days:days, over7: ms ? (Date.now()-ms)>7*86400000 : null };
   });
-  return { version: window.__qfSfFeePanel?.version, cards:cards };
+  return { version: window.__qfSfFeeInline?.version, cards:cards };
 })()`;
 
 (async () => {

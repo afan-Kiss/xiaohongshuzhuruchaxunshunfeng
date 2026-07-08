@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-/** 强制向所有千帆页面重新注入最新脚本（保留侧栏展开状态） */
+/** 强制向所有千帆页面重新注入最新内嵌脚本 */
 const fs = require('fs');
 const path = require('path');
 const { resolveDevtoolsFromQianfanBot } = require('../src/read-qianfan-debug-config');
-const { loadLauncherIconDataUrl } = require('../src/load-launcher-icon');
 const { buildInjectSource, isQianfanPageUrl } = require('../src/build-inject-source');
 const { connectCdp } = require('../src/cdp-connect');
-const { injectPage } = require('../src/inject-page');
+const { injectPage, TEARDOWN_EXPR, clearRegisteredPageScripts } = require('../src/inject-page');
 
 const ROOT = path.resolve(__dirname, '..');
-const panelJs = fs.readFileSync(path.join(ROOT, 'inject', 'qf-sf-fee-panel.js'), 'utf8');
+const panelJs = fs.readFileSync(path.join(ROOT, 'inject', 'qf-sf-fee-inline.js'), 'utf8');
 const panelVersion = panelJs.match(/const VERSION = '([^']+)'/)?.[1] || '';
 let cfg = {};
 try {
@@ -28,7 +27,7 @@ const sfCfg = {
   packageProxyPort: Number(cfg.packageProxyPort || 4725),
 };
 
-const source = buildInjectSource(panelJs, sfCfg, loadLauncherIconDataUrl(), {
+const source = buildInjectSource(panelJs, sfCfg, {
   packageProxyPort: sfCfg.packageProxyPort,
 });
 
@@ -57,6 +56,8 @@ async function inject(page) {
     } catch {
       /* ignore */
     }
+    await clearRegisteredPageScripts(client);
+    await client.Runtime.evaluate({ expression: TEARDOWN_EXPR, returnByValue: true, awaitPromise: true });
     await client.Runtime.evaluate({ expression: WRITE_CFG_EXPR, returnByValue: true });
     await injectPage(client, source, {
       softFirst: false,
@@ -66,13 +67,10 @@ async function inject(page) {
     await client.Runtime.evaluate({ expression: WRITE_CFG_EXPR, returnByValue: true });
     const v = await client.Runtime.evaluate({
       expression: `({
-      v: window.__qfSfFeePanel?.version,
-      iconOnly: document.getElementById('qf-sf-fee-panel-root')?.classList.contains('qsf-icon-only'),
-      expanded: document.getElementById('qf-sf-fee-panel-root')?.classList.contains('qsf-expanded'),
-      docked: document.documentElement.classList.contains('qsf-page-docked'),
-      parent: document.getElementById('qf-sf-fee-panel-root')?.parentElement?.nodeName || null,
-      pinned: sessionStorage.getItem('qsf_panel_pinned_v1') === '1',
-      hasIcon: !!window.__qfSfFeeIconDataUrl
+      v: window.__qfSfFeeInline?.version,
+      mode: window.__qfSfFeeInline ? 'inline' : 'none',
+      hasLegacyPanel: !!document.getElementById('qf-sf-fee-panel-root'),
+      inlineRows: document.querySelectorAll('.qsf-inline-fee-row').length
     })`,
       returnByValue: true,
     });
@@ -85,17 +83,34 @@ async function inject(page) {
 const { startPackageProxy } = require('../src/qianfan-package-proxy');
 
 async function ensurePackageProxy(port) {
+  let ready = false;
   try {
     const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) });
-    if (res.ok) return;
+    if (res.ok) {
+      const body = await res.json().catch(() => ({}));
+      ready = Boolean(body?.features?.fonts);
+    }
   } catch {
-    /* not running */
+    /* not running or old proxy */
   }
+  if (ready) return;
+
+  try {
+    const conn = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(800) }).catch(() => null);
+    if (conn?.ok) {
+      console.warn(`[顺丰运费] 代理 ${port} 为旧版本(无字体路由)，请重启 npm start 或结束占用 ${port} 的进程后重试`);
+    }
+  } catch { /* ignore */ }
+
   try {
     await startPackageProxy({ port });
     console.log(`[顺丰运费] 订单详情代理已启动 http://127.0.0.1:${port}/package-detail`);
   } catch (err) {
-    console.warn(`[顺丰运费] 订单详情代理未启动(${port})，未展开订单卡片将无法通过 API 取运单号: ${err.message || err}`);
+    if (String(err.message || err).includes('EADDRINUSE')) {
+      console.warn(`[顺丰运费] 端口 ${port} 已被旧代理占用，字体/新特性可能不可用`);
+      return;
+    }
+    console.warn(`[顺丰运费] 订单详情代理未启动(${port}): ${err.message || err}`);
   }
 }
 

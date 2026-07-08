@@ -1,30 +1,17 @@
 #!/usr/bin/env node
-/** 紧急解除侧栏对千帆的影响：执行 teardown 并收起为图标 */
+/** 紧急移除旧侧栏窗口，保留订单卡内嵌 */
 const { resolveDevtoolsFromQianfanBot } = require('../src/read-qianfan-debug-config');
 const { connectCdp } = require('../src/cdp-connect');
 const { isQianfanPageUrl } = require('../src/build-inject-source');
+const { TEARDOWN_EXPR, clearRegisteredPageScripts } = require('../src/inject-page');
 
-const EXPR = `(function(){
-  try {
-    window.__qfSfFeePanel?.teardown?.();
-    var p = document.getElementById('qf-sf-fee-panel-root');
-    if (p) p.remove();
-    var st = document.getElementById('qf-sf-fee-panel-style');
-    if (st) st.remove();
-    delete window.__qfSfFeePanel;
-    delete window.__qfSfLauncherDragCleanup;
-    return { ok: true, removed: true };
-  } catch (e) {
-    return { ok: false, error: String(e.message || e) };
-  }
+const PROBE = `(function(){
+  return {
+    hasLegacyPanel: !!document.getElementById('qf-sf-fee-panel-root'),
+    hasInline: !!window.__qfSfFeeInline,
+    inlineVersion: window.__qfSfFeeInline?.version || null,
+  };
 })()`;
-
-async function evalWithTimeout(client, expression, ms = 5000) {
-  return Promise.race([
-    client.Runtime.evaluate({ expression, returnByValue: true }),
-    new Promise((_, rej) => setTimeout(() => rej(new Error(`evaluate 超时 ${ms}ms`)), ms)),
-  ]);
-}
 
 (async () => {
   const bot = resolveDevtoolsFromQianfanBot();
@@ -35,22 +22,22 @@ async function evalWithTimeout(client, expression, ms = 5000) {
   for (const page of pages) {
     let client;
     try {
-      client = await connectCdp(page.webSocketDebuggerUrl, 5000);
-      const r = await evalWithTimeout(client, EXPR, 5000);
+      client = await connectCdp(page.webSocketDebuggerUrl, 8000);
+      await client.Page.enable();
+      await clearRegisteredPageScripts(client);
+      await client.Runtime.evaluate({ expression: TEARDOWN_EXPR, returnByValue: true, awaitPromise: true });
+      const r = await client.Runtime.evaluate({ expression: PROBE, returnByValue: true });
       console.log(page.title, r.result?.value);
     } catch (e) {
       console.log(page.title, 'skip:', e.message);
     } finally {
       if (client) {
-        try {
-          await client.close();
-        } catch {
-          /* ignore */
-        }
+        try { await client.close(); } catch { /* ignore */ }
       }
     }
   }
-  console.log('done', pages.length);
-})().catch((e) => {  console.error(e);
+  console.log('done', pages.length, '— 请运行 node scripts/force-reinject.js 重新注入内嵌脚本');
+})().catch((e) => {
+  console.error(e);
   process.exit(1);
 });

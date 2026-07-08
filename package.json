@@ -2,7 +2,7 @@
   "name": "xhs-qf-sf-fee",
   "version": "1.0.0",
   "private": true,
-  "description": "千帆客服台顺丰月结运费侧栏 — CDP 自动注入",
+  "description": "千帆客服台顺丰月结扣费内嵌 — CDP 自动注入",
   "scripts": {
     "start": "node src/auto-inject.js",
     "check:versions": "node scripts/check-all-versions.js",

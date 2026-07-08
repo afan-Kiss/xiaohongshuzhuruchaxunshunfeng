@@ -7,11 +7,11 @@ const EXPR = `(function(){
     if (!ui) return '';
     return norm(ui.textContent).replace(/点击添加备注.*/,'').replace(/老客.*/,'').trim();
   }
-  if (window.__qfSfFeePanel?.syncSession) window.__qfSfFeePanel.syncSession();
+  if (window.__qfSfFeeInline?.syncSession) window.__qfSfFeeInline.syncSession();
   return {
-    version: window.__qfSfFeePanel?.version,
+    version: window.__qfSfFeeInline?.version,
     header: scrape(),
-    active: window.__qfSfFeePanel?.getActiveBuyer?.() || null,
+    activeSession: window.__qfSfFeeInline?.getActiveSessionKey?.() || null,
   };
 })()`;
 

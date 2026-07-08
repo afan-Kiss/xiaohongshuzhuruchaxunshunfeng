@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** 检查四店千帆页面侧栏版本是否一致 */
+/** 检查四店千帆页面内嵌脚本版本是否一致 */
 const fs = require('fs');
 const path = require('path');
 const { resolveDevtoolsFromQianfanBot } = require('../src/read-qianfan-debug-config');
@@ -7,16 +7,15 @@ const { connectCdp } = require('../src/cdp-connect');
 const { isQianfanPageUrl } = require('../src/build-inject-source');
 
 const ROOT = path.resolve(__dirname, '..');
-const PANEL_PATH = path.join(ROOT, 'inject', 'qf-sf-fee-panel.js');
+const PANEL_PATH = path.join(ROOT, 'inject', 'qf-sf-fee-inline.js');
 const expected = fs.readFileSync(PANEL_PATH, 'utf8').match(/const VERSION = '([^']+)'/)?.[1] || '';
 
 const PROBE = `(function(){
-  var p = document.getElementById('qf-sf-fee-panel-root');
-  var foot = document.querySelector('#qf-sf-fee-panel-root .qsf-ver');
   return {
-    version: window.__qfSfFeePanel && window.__qfSfFeePanel.version,
-    hasPanel: !!p,
-    footer: foot ? foot.textContent : null,
+    version: window.__qfSfFeeInline && window.__qfSfFeeInline.version,
+    hasInline: !!window.__qfSfFeeInline,
+    hasLegacyPanel: !!document.getElementById('qf-sf-fee-panel-root'),
+    inlineRows: document.querySelectorAll('.qsf-inline-fee-row').length,
     title: document.title,
   };
 })()`;
@@ -31,7 +30,6 @@ async function main() {
   console.log(`期望版本: v${expected}  |  DevTools ${host}:${port}  |  ${pages.length} 个千帆页面\n`);
 
   const rows = [];
-  const expectedFooter = `v${expected}`;
   for (const page of pages) {
     let client;
     try {
@@ -41,9 +39,10 @@ async function main() {
       rows.push({
         title: page.title,
         version: info.version || '(无)',
-        footer: info.footer || '(无)',
-        hasPanel: info.hasPanel,
-        ok: info.version === expected && (!info.footer || info.footer === expectedFooter),
+        hasInline: info.hasInline,
+        hasLegacyPanel: info.hasLegacyPanel,
+        inlineRows: info.inlineRows || 0,
+        ok: info.version === expected && info.hasInline && !info.hasLegacyPanel,
       });
     } catch (err) {
       rows.push({ title: page.title, version: `(探测失败: ${err.message})`, ok: false });
@@ -57,7 +56,7 @@ async function main() {
   for (const row of rows) {
     const mark = row.ok ? 'OK ' : 'ERR';
     console.log(`${mark}  ${row.title}`);
-    console.log(`     脚本版本=${row.version}  底部=${row.footer || '-'}  有侧栏=${row.hasPanel ? '是' : '否'}`);
+    console.log(`     脚本版本=${row.version}  内嵌=${row.hasInline ? '是' : '否'}  旧侧栏=${row.hasLegacyPanel ? '是' : '否'}  行数=${row.inlineRows ?? '-'}`);
   }
 
   const versions = [...new Set(rows.map((r) => r.version).filter((v) => v && !v.startsWith('(')))];

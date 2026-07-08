@@ -2,6 +2,8 @@
  * 本机 HTTP 代理：按 shopKey + packageId 查千帆订单详情
  */
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { URL } = require('url');
 const {
   resolveShopKeyFromTitle,
@@ -12,6 +14,11 @@ const {
 const { fetchPackageDetailByCookie } = require('./qianfan-package-api');
 
 const DEFAULT_PORT = 4725;
+const FONT_DIR = path.join(__dirname, '..', 'assets', 'fonts');
+const FONT_FILES = {
+  '/fonts/HarmonyOS_SansSC_Regular.ttf': 'HarmonyOS_SansSC_Regular.ttf',
+  '/fonts/HarmonyOS_SansSC_Medium.ttf': 'HarmonyOS_SansSC_Medium.ttf',
+};
 
 function resolveCorsOrigin(req) {
   const origin = String(req.headers.origin || '').trim();
@@ -24,6 +31,24 @@ function resolveCorsOrigin(req) {
     /* ignore */
   }
   return '';
+}
+
+function sendFont(req, res, fileName) {
+  const filePath = path.join(FONT_DIR, fileName);
+  if (!fs.existsSync(filePath)) {
+    sendJson(req, res, 404, { ok: false, error: 'font_not_found' });
+    return;
+  }
+  const headers = {
+    'Content-Type': 'font/ttf',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Cache-Control': 'public, max-age=604800',
+  };
+  const cors = resolveCorsOrigin(req);
+  if (cors) headers['Access-Control-Allow-Origin'] = cors;
+  res.writeHead(200, headers);
+  fs.createReadStream(filePath).pipe(res);
 }
 
 function sendJson(req, res, status, body) {
@@ -94,6 +119,7 @@ function createPackageProxyServer(options = {}) {
         const manual = require('./qianfan-shop-cookies').loadManualCookiesMap();
         sendJson(req, res, 200, {
           ok: true,
+          features: { fonts: true, packageDetail: true },
           shops: Object.keys(manual.map || {}),
           manualSource: manual.source || null,
         });
@@ -103,6 +129,12 @@ function createPackageProxyServer(options = {}) {
       if (req.method === 'GET' && u.pathname === '/package-detail') {
         const result = await handlePackageDetail(Object.fromEntries(u.searchParams.entries()));
         sendJson(req, res, result.ok ? 200 : result.status || 500, result);
+        return;
+      }
+
+      const fontFile = FONT_FILES[u.pathname];
+      if (req.method === 'GET' && fontFile) {
+        sendFont(req, res, fontFile);
         return;
       }
 

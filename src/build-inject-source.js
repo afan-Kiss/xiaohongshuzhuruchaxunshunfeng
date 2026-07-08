@@ -1,7 +1,7 @@
 /** 构建 CDP 注入脚本（auto-inject / force-reinject 共用） */
 const STORAGE_KEY = 'qf_sf_fee_config_v1';
 
-function buildPresetBootstrap(sfCfg, iconDataUrl, extra = {}) {
+function buildPresetBootstrap(sfCfg, extra = {}) {
   const preset = {
     partnerID: String(sfCfg.partnerID || '').trim(),
     checkWord: String(sfCfg.checkWord || '').trim(),
@@ -11,11 +11,9 @@ function buildPresetBootstrap(sfCfg, iconDataUrl, extra = {}) {
     sandbox: Boolean(sfCfg.sandbox),
   };
   const presetJson = JSON.stringify(preset);
-  const iconLiteral = JSON.stringify(iconDataUrl || '');
   const proxyPort = Number(extra.packageProxyPort || sfCfg.packageProxyPort || 4725);
   return `(function(){
   try {
-    window.__qfSfFeeIconDataUrl = ${iconLiteral};
     window.__qfPackageProxyPort = ${proxyPort};
     window.__qfSfFeePreset = ${presetJson};
     var preset = ${presetJson};
@@ -28,12 +26,13 @@ function buildPresetBootstrap(sfCfg, iconDataUrl, extra = {}) {
     localStorage.setItem(key, JSON.stringify(merged));
     try { localStorage.removeItem('qf_sf_fee_buyer_cache_v1'); } catch (e) {}
     try { sessionStorage.removeItem('qsf_fee_cache_ver'); } catch (e) {}
+    try { sessionStorage.removeItem('qsf_panel_pinned_v1'); } catch (e) {}
   } catch (e) {}
 })();`;
 }
 
-function buildInjectSource(panelJs, sfCfg, iconDataUrl, extra = {}) {
-  return `${buildPresetBootstrap(sfCfg, iconDataUrl, extra)}\n${panelJs}`;
+function buildInjectSource(inlineJs, sfCfg, extra = {}) {
+  return `${buildPresetBootstrap(sfCfg, extra)}\n${inlineJs}`;
 }
 
 function isQianfanPageUrl(url) {

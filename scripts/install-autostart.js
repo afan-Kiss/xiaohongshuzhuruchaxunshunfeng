@@ -5,7 +5,6 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
-const { loadLauncherIconDataUrl, DESKTOP_ICON, PROJECT_ICON } = require('../src/load-launcher-icon');
 
 const ROOT = path.resolve(__dirname, '..');
 const STARTUP =
@@ -14,16 +13,6 @@ const STARTUP =
 const VBS_NAME = '千帆顺丰运费注入.vbs';
 const CONFIG_PATH = path.join(ROOT, 'config.json');
 const EXAMPLE_PATH = path.join(ROOT, 'config.example.json');
-
-function ensureLauncherIcon() {
-  fs.mkdirSync(path.dirname(PROJECT_ICON), { recursive: true });
-  if (fs.existsSync(DESKTOP_ICON)) {
-    fs.copyFileSync(DESKTOP_ICON, PROJECT_ICON);
-    console.log('[install] 已同步桌面图标 → assets/launcher.ico');
-  } else if (!fs.existsSync(PROJECT_ICON)) {
-    console.warn('[install] 未找到桌面 1.ico，侧栏将使用 SF 文字图标');
-  }
-}
 
 function ensureConfig() {
   if (fs.existsSync(CONFIG_PATH)) return;
@@ -66,14 +55,13 @@ function main() {
   execSync('npm install', { cwd: ROOT, stdio: 'inherit' });
 
   ensureConfig();
-  ensureLauncherIcon();
 
   const vbsPath = writeVbs();
   console.log('[install] 已写入开机自启:', vbsPath);
 
   startDaemonNow();
   console.log('[install] 守护进程已在后台运行');
-  console.log('[install] 现在启动/切换千帆调试模式即可，右侧会自动出现「顺丰月结运费」侧栏');
+  console.log('[install] 启动千帆调试模式后，订单卡内会自动显示月结费用与退款信息');
   console.log('[install] 丰桥凭证请编辑:', CONFIG_PATH);
 }
 

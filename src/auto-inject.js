@@ -1,10 +1,9 @@
 /**
- * 千帆 DevTools 自动注入守护：千帆调试模式启动后，自动向页面注入顺丰运费侧栏
+ * 千帆 DevTools 自动注入守护：千帆调试模式启动后，自动向页面注入顺丰月结扣费内嵌脚本
  */
 const fs = require('fs');
 const path = require('path');
 const { resolveDevtoolsFromQianfanBot } = require('./read-qianfan-debug-config');
-const { loadLauncherIconDataUrl } = require('./load-launcher-icon');
 const { buildInjectSource, isQianfanPageUrl } = require('./build-inject-source');
 const { connectCdp } = require('./cdp-connect');
 const { startPackageProxy, DEFAULT_PORT: PACKAGE_PROXY_PORT } = require('./qianfan-package-proxy');
@@ -12,7 +11,7 @@ const { injectPage, VERSION_PROBE_EXPR } = require('./inject-page');
 
 const ROOT = path.resolve(__dirname, '..');
 const CONFIG_PATH = path.join(ROOT, 'config.json');
-const PANEL_SCRIPT_PATH = path.join(ROOT, 'inject', 'qf-sf-fee-panel.js');
+const INLINE_SCRIPT_PATH = path.join(ROOT, 'inject', 'qf-sf-fee-inline.js');
 const LOCK_PATH = path.join(ROOT, '.inject-daemon.lock');
 const LOG_PREFIX = '[顺丰运费注入]';
 
@@ -105,9 +104,9 @@ async function injectToPage(page, source, prev, panelVersion) {
       /* ignore */
     }
     const result = await injectPage(client, source, {
-      softFirst: Boolean(prev?.ok),
+      softFirst: Boolean(prev?.ok) && prev?.injectedVersion === panelVersion,
       expectedVersion: panelVersion,
-      registerOnNewDocument: !prev?.scriptRegistered,
+      registerOnNewDocument: !prev?.scriptRegistered || prev?.injectedVersion !== panelVersion,
     });
     if (result.mode === 'hard') {
       log(`已注入: ${page.title || page.url}`);
@@ -130,23 +129,36 @@ async function main() {
   try {
     await startPackageProxy({ port: config.packageProxyPort });
   } catch (err) {
-    log(`订单详情代理启动失败: ${err.message || err}`);
+    if (err?.code === 'EADDRINUSE') {
+      try {
+        const res = await fetch(`http://127.0.0.1:${config.packageProxyPort}/health`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!body?.features?.fonts) {
+          log(`提示: 端口 ${config.packageProxyPort} 为旧版代理，请重启守护进程以启用字体等新特性`);
+        }
+      } catch {
+        log(`订单详情代理端口 ${config.packageProxyPort} 已被占用`);
+      }
+    } else {
+      log(`订单详情代理启动失败: ${err.message || err}`);
+    }
   }
-  if (!fs.existsSync(PANEL_SCRIPT_PATH)) {
-    console.error(`${LOG_PREFIX} 缺少 ${PANEL_SCRIPT_PATH}`);
+  if (!fs.existsSync(INLINE_SCRIPT_PATH)) {
+    console.error(`${LOG_PREFIX} 缺少 ${INLINE_SCRIPT_PATH}`);
     process.exit(1);
   }
-  const panelJs = fs.readFileSync(PANEL_SCRIPT_PATH, 'utf8');
-  const iconDataUrl = loadLauncherIconDataUrl();
+  const panelJs = fs.readFileSync(INLINE_SCRIPT_PATH, 'utf8');
   let panelVersion = panelJs.match(/const VERSION = '([^']+)'/)?.[1] || '';
-  let injectSource = buildInjectSource(panelJs, config.sf, iconDataUrl, {
+  let injectSource = buildInjectSource(panelJs, config.sf, {
     packageProxyPort: config.packageProxyPort,
   });
 
-  log(`守护启动 → DevTools ${config.devtoolsHost}:${config.devtoolsPort}，侧栏 v${panelVersion}`);
+  log(`守护启动 → DevTools ${config.devtoolsHost}:${config.devtoolsPort}，内嵌 v${panelVersion}`);
   if (config.devtoolsSource) log(`端口来源: ${config.devtoolsSource}`);
   if (!config.sf.partnerID || !config.sf.checkWord) {
-    log('提示: config.json 未填 sf.partnerID / checkWord，可在侧栏 ⚙ 配置（仅首次）');
+    log('提示: config.json 未填 sf.partnerID / checkWord');
   }
   if (!config.sf.sandbox && !config.sf.monthlyCard) {
     log('提示: 生产环境需配置 sf.monthlyCard（顺丰月结卡号），否则清单运费查询会报 8151');
@@ -159,15 +171,15 @@ async function main() {
   for (;;) {
     let needFastPoll = false;
     try {
-      const currentPanelJs = fs.readFileSync(PANEL_SCRIPT_PATH, 'utf8');
+      const currentPanelJs = fs.readFileSync(INLINE_SCRIPT_PATH, 'utf8');
       const currentVersion = currentPanelJs.match(/const VERSION = '([^']+)'/)?.[1] || '';
       if (currentVersion && currentVersion !== panelVersion) {
         panelVersion = currentVersion;
-        injectSource = buildInjectSource(currentPanelJs, config.sf, iconDataUrl, {
+        injectSource = buildInjectSource(currentPanelJs, config.sf, {
           packageProxyPort: config.packageProxyPort,
         });
         injected.clear();
-        log(`检测到侧栏新版本 v${panelVersion}，将同步注入全部页面`);
+        log(`检测到内嵌新版本 v${panelVersion}，将同步注入全部页面`);
       }
 
       const pages = await fetchPageList(config.devtoolsHost, config.devtoolsPort);
@@ -202,12 +214,16 @@ async function main() {
               }),
               new Promise((_, rej) => setTimeout(() => rej(new Error('version check timeout')), 5000)),
             ]);
-            await client.close();
             const info = check.result?.value || {};
+            if (info.version === panelVersion && info.hasInline && !info.hasLegacyPanel) {
+              await client.Runtime.evaluate({
+                expression: 'window.__qfSfFeeInline?.syncSession?.(); window.__qfSfFeeInline?.rescan?.();',
+              });
+            }
+            await client.close();
             injected.set(ws, { ...prev, versionCheckedAt: Date.now() });
-            if (info.version !== panelVersion || !info.hasPanel) needInject = true;
-            else if (info.footerVersion && info.footerVersion !== `v${panelVersion}`) needInject = true;
-            else if (!info.hasPatch) needInject = true;
+            if (info.version !== panelVersion || !info.hasInline) needInject = true;
+            else if (info.hasLegacyPanel) needInject = true;
           } catch {
             injected.set(ws, { ...prev, versionCheckedAt: Date.now() - 25000 });
             needInject = true;
