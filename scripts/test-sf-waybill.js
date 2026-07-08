@@ -8,6 +8,8 @@ const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '../config.json'), '
 const sf = cfg.sf || {};
 const waybill = process.argv[2] || 'SF5115411160725';
 const useSandbox = process.argv.includes('--sandbox');
+const monthlyCardArg = process.argv.find((a) => a.startsWith('--monthly-card='));
+const monthlyCard = monthlyCardArg ? monthlyCardArg.slice('--monthly-card='.length) : String(sf.monthlyCard || '').trim();
 
 const partnerID = sf.partnerID;
 const checkWord = useSandbox ? sf.checkWordSandbox : sf.checkWord;
@@ -22,7 +24,9 @@ function sfMsgDigest(msgData, timestamp, word) {
 }
 
 async function query() {
-  const msgData = JSON.stringify({ trackingType: '2', trackingNum: waybill });
+  const payload = { trackingType: '2', trackingNum: waybill };
+  if (monthlyCard) payload.monthlyCard = monthlyCard;
+  const msgData = JSON.stringify(payload);
   const timestamp = Date.now();
   const msgDigest = sfMsgDigest(msgData, timestamp, checkWord);
   const body = new URLSearchParams({
@@ -37,6 +41,7 @@ async function query() {
   console.log('env:', useSandbox ? 'sandbox' : 'production');
   console.log('partnerID:', partnerID);
   console.log('waybill:', waybill);
+  console.log('monthlyCard:', monthlyCard || '(未配置)');
 
   const res = await fetch(url, {
     method: 'POST',

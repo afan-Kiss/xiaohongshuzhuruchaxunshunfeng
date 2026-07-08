@@ -25,21 +25,19 @@ function killOldDaemon() {
   }
 }
 
-function startDaemon() {
-  const child = spawn(process.execPath, [path.join(ROOT, 'src', 'auto-inject.js')], {
+function spawnHidden(args, label) {
+  const child = spawn(process.execPath, args, {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
     cwd: ROOT,
   });
   child.unref();
-  console.log('[restart] 新守护进程已启动 PID=', child.pid);
+  if (label) console.log(label, child.pid);
+  return child;
 }
 
 killOldDaemon();
 setTimeout(() => {
-  startDaemon();
-  setTimeout(() => {
-    require('child_process').execSync('node scripts/force-reinject.js', { cwd: ROOT, stdio: 'inherit' });
-  }, 1500);
+  spawnHidden([path.join(ROOT, 'src', 'auto-inject.js')], '[restart] 新守护进程已启动 PID=');
 }, 800);

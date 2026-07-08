@@ -3,11 +3,12 @@
  */
 const fs = require('fs');
 const path = require('path');
-const CDP = require('chrome-remote-interface');
 const { resolveDevtoolsFromQianfanBot } = require('./read-qianfan-debug-config');
 const { loadLauncherIconDataUrl } = require('./load-launcher-icon');
 const { buildInjectSource, isQianfanPageUrl } = require('./build-inject-source');
 const { connectCdp } = require('./cdp-connect');
+const { startPackageProxy, DEFAULT_PORT: PACKAGE_PROXY_PORT } = require('./qianfan-package-proxy');
+const { injectPage, VERSION_PROBE_EXPR } = require('./inject-page');
 
 const ROOT = path.resolve(__dirname, '..');
 const CONFIG_PATH = path.join(ROOT, 'config.json');
@@ -27,7 +28,6 @@ function acquireSingleInstance() {
       if (oldPid > 0) {
         try {
           process.kill(oldPid, 0);
-          log(`已有守护进程 PID=${oldPid}，本进程退出`);
           process.exit(0);
         } catch {
           /* stale lock */
@@ -72,11 +72,13 @@ function loadConfig() {
     devtoolsHost: host,
     devtoolsPort: port,
     pollIntervalMs: Number(fileCfg.pollIntervalMs) || 2500,
+    packageProxyPort: Number(fileCfg.packageProxyPort || process.env.QF_PACKAGE_PROXY_PORT || PACKAGE_PROXY_PORT),
     sf: {
       partnerID: String(fileCfg.sf?.partnerID || '').trim(),
       checkWord: String(fileCfg.sf?.checkWord || '').trim(),
       checkWordSandbox: String(fileCfg.sf?.checkWordSandbox || '').trim(),
       phoneLast4: String(fileCfg.sf?.phoneLast4 || '').trim(),
+      monthlyCard: String(fileCfg.sf?.monthlyCard || '').trim(),
       sandbox: Boolean(fileCfg.sf?.sandbox),
     },
     devtoolsSource: fromBot?.source || '',
@@ -93,21 +95,23 @@ async function fetchPageList(host, port) {
   return list.filter((t) => t.type === 'page' && t.webSocketDebuggerUrl && isQianfanPageUrl(t.url));
 }
 
-async function injectToPage(page, source, prev) {
+async function injectToPage(page, source, prev, panelVersion) {
   let client;
   try {
     client = await connectCdp(page.webSocketDebuggerUrl, 8000);
-    const { Page, Runtime } = client;
     try {
-      await Page.enable();
+      await client.Page.enable();
     } catch {
       /* ignore */
     }
-    if (!prev?.scriptRegistered) {
-      await Page.addScriptToEvaluateOnNewDocument({ source });
+    const result = await injectPage(client, source, {
+      softFirst: Boolean(prev?.ok),
+      expectedVersion: panelVersion,
+      registerOnNewDocument: !prev?.scriptRegistered,
+    });
+    if (result.mode === 'hard') {
+      log(`已注入: ${page.title || page.url}`);
     }
-    await Runtime.evaluate({ expression: source, returnByValue: true, awaitPromise: true });
-    log(`已注入: ${page.title || page.url}`);
     return true;
   } finally {
     if (client) {
@@ -123,6 +127,11 @@ async function injectToPage(page, source, prev) {
 async function main() {
   acquireSingleInstance();
   const config = loadConfig();
+  try {
+    await startPackageProxy({ port: config.packageProxyPort });
+  } catch (err) {
+    log(`订单详情代理启动失败: ${err.message || err}`);
+  }
   if (!fs.existsSync(PANEL_SCRIPT_PATH)) {
     console.error(`${LOG_PREFIX} 缺少 ${PANEL_SCRIPT_PATH}`);
     process.exit(1);
@@ -130,12 +139,17 @@ async function main() {
   const panelJs = fs.readFileSync(PANEL_SCRIPT_PATH, 'utf8');
   const iconDataUrl = loadLauncherIconDataUrl();
   let panelVersion = panelJs.match(/const VERSION = '([^']+)'/)?.[1] || '';
-  let injectSource = buildInjectSource(panelJs, config.sf, iconDataUrl);
+  let injectSource = buildInjectSource(panelJs, config.sf, iconDataUrl, {
+    packageProxyPort: config.packageProxyPort,
+  });
 
   log(`守护启动 → DevTools ${config.devtoolsHost}:${config.devtoolsPort}，侧栏 v${panelVersion}`);
   if (config.devtoolsSource) log(`端口来源: ${config.devtoolsSource}`);
   if (!config.sf.partnerID || !config.sf.checkWord) {
     log('提示: config.json 未填 sf.partnerID / checkWord，可在侧栏 ⚙ 配置（仅首次）');
+  }
+  if (!config.sf.sandbox && !config.sf.monthlyCard) {
+    log('提示: 生产环境需配置 sf.monthlyCard（顺丰月结卡号），否则清单运费查询会报 8151');
   }
 
   const injected = new Map();
@@ -149,9 +163,11 @@ async function main() {
       const currentVersion = currentPanelJs.match(/const VERSION = '([^']+)'/)?.[1] || '';
       if (currentVersion && currentVersion !== panelVersion) {
         panelVersion = currentVersion;
-        injectSource = buildInjectSource(currentPanelJs, config.sf, iconDataUrl);
+        injectSource = buildInjectSource(currentPanelJs, config.sf, iconDataUrl, {
+          packageProxyPort: config.packageProxyPort,
+        });
         injected.clear();
-        log(`检测到侧栏新版本 v${panelVersion}，将重新注入所有页面`);
+        log(`检测到侧栏新版本 v${panelVersion}，将同步注入全部页面`);
       }
 
       const pages = await fetchPageList(config.devtoolsHost, config.devtoolsPort);
@@ -168,23 +184,20 @@ async function main() {
       for (const page of pages) {
         const ws = page.webSocketDebuggerUrl;
         const prev = injected.get(ws) || { ok: false, fails: 0 };
-        let needInject = !prev.ok;
-
         const versionCheckDue =
           prev.ok && (!prev.versionCheckedAt || Date.now() - prev.versionCheckedAt > 30000);
+        let needInject = !prev.ok;
 
-        if (versionCheckDue) {
+        if (prev.injectedVersion && prev.injectedVersion !== panelVersion) {
+          needInject = true;
+        }
+
+        if (!needInject && versionCheckDue) {
           try {
             const client = await connectCdp(ws, 5000);
             const check = await Promise.race([
               client.Runtime.evaluate({
-                expression: `(function(){
-                var p = document.getElementById('qf-sf-fee-panel-root');
-                return {
-                  version: window.__qfSfFeePanel && window.__qfSfFeePanel.version,
-                  hasPanel: !!p
-                };
-              })()`,
+                expression: VERSION_PROBE_EXPR,
                 returnByValue: true,
               }),
               new Promise((_, rej) => setTimeout(() => rej(new Error('version check timeout')), 5000)),
@@ -192,13 +205,15 @@ async function main() {
             await client.close();
             const info = check.result?.value || {};
             injected.set(ws, { ...prev, versionCheckedAt: Date.now() });
-            if (info.version !== panelVersion) needInject = true;
-            else if (!info.hasPanel) needInject = true;
-            else continue;
+            if (info.version !== panelVersion || !info.hasPanel) needInject = true;
+            else if (info.footerVersion && info.footerVersion !== `v${panelVersion}`) needInject = true;
+            else if (!info.hasPatch) needInject = true;
           } catch {
+            injected.set(ws, { ...prev, versionCheckedAt: Date.now() - 25000 });
             needInject = true;
+            needFastPoll = true;
           }
-        } else if (prev.ok) {
+        } else if (prev.ok && !needInject) {
           continue;
         }
 
@@ -206,11 +221,33 @@ async function main() {
         needFastPoll = true;
 
         try {
-          await injectToPage(page, injectSource, prev);
-          injected.set(ws, { ok: true, fails: 0, title: page.title, scriptRegistered: true, url: page.url });
+          await injectToPage(page, injectSource, prev, panelVersion);
+          injected.set(ws, {
+            ok: true,
+            fails: 0,
+            lastInjectAt: Date.now(),
+            injectedVersion: panelVersion,
+            versionCheckedAt: Date.now(),
+            title: page.title,
+            scriptRegistered: true,
+            url: page.url,
+          });
+          if (prev.injectedVersion && prev.injectedVersion !== panelVersion) {
+            log(`已升级 ${page.title || 'page'}: v${prev.injectedVersion || '?'} → v${panelVersion}`);
+          } else if (!prev.ok) {
+            log(`已注入: ${page.title || page.url}`);
+          }
         } catch (err) {
           const fails = (prev.fails || 0) + 1;
-          injected.set(ws, { at: Date.now(), ok: false, fails, title: page.title, url: page.url });
+          injected.set(ws, {
+            at: Date.now(),
+            lastInjectAt: Date.now(),
+            ok: false,
+            fails,
+            injectedVersion: prev.injectedVersion || '',
+            title: page.title,
+            url: page.url,
+          });
           needFastPoll = true;
           if (fails <= 2) log(`注入失败 (${page.title || 'page'}): ${err.message || err}`);
         }
@@ -224,7 +261,7 @@ async function main() {
       needFastPoll = true;
     }
 
-    nextPollMs = needFastPoll ? 800 : config.pollIntervalMs;
+    nextPollMs = needFastPoll ? 1200 : config.pollIntervalMs;
     await new Promise((r) => setTimeout(r, nextPollMs));
   }
 }

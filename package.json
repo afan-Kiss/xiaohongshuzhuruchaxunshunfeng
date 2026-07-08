@@ -5,9 +5,13 @@
   "description": "千帆客服台顺丰月结运费侧栏 — CDP 自动注入",
   "scripts": {
     "start": "node src/auto-inject.js",
-    "install:autostart": "node scripts/install-autostart.js"
+    "check:versions": "node scripts/check-all-versions.js",
+    "reinject": "node scripts/force-reinject.js",
+    "install:autostart": "node scripts/install-autostart.js",
+    "start:fee-web": "node shunfengchafeiyong/server.js"
   },
   "dependencies": {
-    "chrome-remote-interface": "^0.33.3"
+    "chrome-remote-interface": "^0.33.3",
+    "xlsx": "^0.18.5"
   }
 }

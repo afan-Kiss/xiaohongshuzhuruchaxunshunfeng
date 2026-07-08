@@ -1,0 +1,15 @@
+[Unit]
+Description=顺丰月结运费分析 Web (/shunfengchafeiyong)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/小红书运费顺丰真实查询
+ExecStart=/usr/bin/node shunfengchafeiyong/server.js
+Restart=on-failure
+RestartSec=5
+Environment=PORT=6666
+Environment=SF_FEE_BASE_PATH=/shunfengchafeiyong
+
+[Install]
+WantedBy=multi-user.target
