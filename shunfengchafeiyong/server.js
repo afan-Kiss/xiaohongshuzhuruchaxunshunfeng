@@ -36,6 +36,11 @@ function readBody(req, limit = 2 * 1024 * 1024) {
   });
 }
 
+function feeLog(msg) {
+  const line = `[${new Date().toLocaleString('zh-CN', { hour12: false })}] [顺丰查费用] ${msg}`;
+  console.log(line);
+}
+
 function sendJson(res, status, data) {
   const text = JSON.stringify(data);
   res.writeHead(status, {
@@ -203,6 +208,11 @@ function createServer() {
         const raw = await readBody(req, 30 * 1024 * 1024);
         const body = JSON.parse(raw || '{}');
         const data = await handleBatchQuery({ sf }, body);
+        if (data.ok) {
+          feeLog(`批量查询 ${data.count} 单 · 成功 ${data.successCount} · 失败 ${data.failCount} · 运费合计 ¥${data.totalFee}`);
+        } else {
+          feeLog(`批量查询失败: ${data.error || 'unknown'}`);
+        }
         return sendJson(res, data.ok ? 200 : 400, data);
       }
 
@@ -231,11 +241,15 @@ function createServer() {
 }
 
 if (require.main === module) {
-  const { webPort, basePath } = loadConfig();
+  const { sf, webPort, basePath } = loadConfig();
   const server = createServer();
+  server.on('error', (err) => {
+    feeLog(`Web 启动失败: ${err.message || err}`);
+    process.exit(1);
+  });
   server.listen(webPort, '0.0.0.0', () => {
-    console.log(`[顺丰查费用] 本地访问: http://127.0.0.1:${webPort}${basePath}/`);
-    console.log(`[顺丰查费用] 或打开: http://localhost:${webPort}${basePath}/`);
+    feeLog(`Web 已监听 http://127.0.0.1:${webPort}${basePath}/`);
+    feeLog(`顺丰环境 ${sf.sandbox ? '沙箱' : '生产'} · 月结卡 ${sf.monthlyCard || '未配置'} · partner ${sf.partnerID || '未配置'}`);
   });
 }
 

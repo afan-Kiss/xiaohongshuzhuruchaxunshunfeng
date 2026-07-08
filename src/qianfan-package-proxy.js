@@ -11,7 +11,7 @@ const {
   getShopCookie,
   invalidateShopCookie,
 } = require('./qianfan-shop-cookies');
-const { fetchPackageDetailByCookie } = require('./qianfan-package-api');
+const { fetchPackageDetailByCookie, fetchReturnsV3ByCookie } = require('./qianfan-package-api');
 
 const DEFAULT_PORT = 4725;
 const FONT_DIR = path.join(__dirname, '..', 'assets', 'fonts');
@@ -104,6 +104,45 @@ async function handlePackageDetail(query) {
   };
 }
 
+async function handleAfterSale(query) {
+  const returnsId = String(query.returnsId || query.returns_id || '').trim();
+  const packageId = String(query.packageId || query.package_id || '').trim();
+  const shopKey = String(query.shopKey || query.shop_key || '').trim()
+    || resolveShopKeyFromTitle(query.shopTitle || query.shop_title || query.title || '');
+  if (!returnsId) return { ok: false, status: 400, error: 'missing returnsId' };
+  if (!shopKey) return { ok: false, status: 400, error: 'missing shopKey or shopTitle' };
+
+  const cookieRes = await getShopCookie(shopKey);
+  if (!cookieRes.ok) {
+    return { ok: false, status: 503, error: cookieRes.error, shopKey };
+  }
+
+  const detail = await fetchReturnsV3ByCookie(returnsId, cookieRes.cookie, packageId);
+  if (!detail.ok) {
+    const status = detail.status || 502;
+    if (status === 401 || status === 403) invalidateShopCookie(shopKey);
+    return {
+      ok: false,
+      status,
+      error: detail.error || 'fetch_failed',
+      shopKey,
+      returnsId,
+      via: detail.via,
+    };
+  }
+
+  return {
+    ok: true,
+    shopKey,
+    shopTitle: resolveShopTitleFromKey(shopKey),
+    returnsId,
+    packageId: packageId || detail.data?.after_sale?.package_id || detail.data?.package_id || '',
+    cookieSource: cookieRes.source,
+    via: detail.via,
+    data: detail.data,
+  };
+}
+
 function createPackageProxyServer(options = {}) {
   const port = Number(options.port || process.env.QF_PACKAGE_PROXY_PORT || DEFAULT_PORT);
 
@@ -119,7 +158,7 @@ function createPackageProxyServer(options = {}) {
         const manual = require('./qianfan-shop-cookies').loadManualCookiesMap();
         sendJson(req, res, 200, {
           ok: true,
-          features: { fonts: true, packageDetail: true },
+          features: { fonts: true, packageDetail: true, afterSale: true },
           shops: Object.keys(manual.map || {}),
           manualSource: manual.source || null,
         });
@@ -128,6 +167,12 @@ function createPackageProxyServer(options = {}) {
 
       if (req.method === 'GET' && u.pathname === '/package-detail') {
         const result = await handlePackageDetail(Object.fromEntries(u.searchParams.entries()));
+        sendJson(req, res, result.ok ? 200 : result.status || 500, result);
+        return;
+      }
+
+      if (req.method === 'GET' && u.pathname === '/after-sale') {
+        const result = await handleAfterSale(Object.fromEntries(u.searchParams.entries()));
         sendJson(req, res, result.ok ? 200 : result.status || 500, result);
         return;
       }
@@ -152,7 +197,7 @@ function startPackageProxy(options = {}) {
   return new Promise((resolve, reject) => {
     server.on('error', reject);
     server.listen(port, '127.0.0.1', () => {
-      console.log(`[顺丰运费] 订单详情代理 http://127.0.0.1:${port}/package-detail`);
+      console.log(`[顺丰运费] 订单代理 http://127.0.0.1:${port}/package-detail  /after-sale`);
       resolve({ server, port });
     });
   });
@@ -162,4 +207,5 @@ module.exports = {
   DEFAULT_PORT,
   startPackageProxy,
   handlePackageDetail,
+  handleAfterSale,
 };

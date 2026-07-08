@@ -16,7 +16,7 @@ const LOCK_PATH = path.join(ROOT, '.inject-daemon.lock');
 const LOG_PREFIX = '[顺丰运费注入]';
 
 function log(msg) {
-  const line = `${new Date().toLocaleTimeString('zh-CN', { hour12: false })} ${LOG_PREFIX} ${msg}`;
+  const line = `${new Date().toLocaleString('zh-CN', { hour12: false })} ${LOG_PREFIX} ${msg}`;
   console.log(line);
 }
 
@@ -167,6 +167,8 @@ async function main() {
   const injected = new Map();
   let devtoolsUp = false;
   let nextPollMs = config.pollIntervalMs;
+  let lastStatusLog = 0;
+  let lastPageCount = 0;
 
   for (;;) {
     let needFastPoll = false;
@@ -184,9 +186,12 @@ async function main() {
 
       const pages = await fetchPageList(config.devtoolsHost, config.devtoolsPort);
       if (!devtoolsUp) {
-        log(`已连接 DevTools，当前 ${pages.length} 个千帆页面`);
+        log(`已连接 DevTools ${config.devtoolsHost}:${config.devtoolsPort}，当前 ${pages.length} 个千帆页面`);
         devtoolsUp = true;
+      } else if (pages.length !== lastPageCount) {
+        log(`千帆页面数变化 ${lastPageCount} → ${pages.length}`);
       }
+      lastPageCount = pages.length;
 
       const alive = new Set(pages.map((p) => p.webSocketDebuggerUrl));
       for (const [ws] of injected) {
@@ -275,6 +280,14 @@ async function main() {
         injected.clear();
       }
       needFastPoll = true;
+    }
+
+    const injectedOk = [...injected.values()].filter((v) => v.ok).length;
+    if (Date.now() - lastStatusLog > 60000) {
+      log(
+        `状态 · DevTools ${devtoolsUp ? '在线' : '离线'} · 千帆页 ${lastPageCount} · 已注入 ${injectedOk}/${injected.size} · 内嵌 v${panelVersion} · 代理 :${config.packageProxyPort}`,
+      );
+      lastStatusLog = Date.now();
     }
 
     nextPollMs = needFastPoll ? 1200 : config.pollIntervalMs;

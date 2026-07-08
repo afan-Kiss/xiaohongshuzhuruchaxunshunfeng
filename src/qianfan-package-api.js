@@ -300,9 +300,145 @@ async function fetchPackageDetailByCookie(packageId, cookie) {
 
 
 
+async function fetchReturnsV3ByCookie(returnsId, cookie, packageId) {
+
+  const rid = String(returnsId || '').trim();
+
+  if (!rid) return { ok: false, error: 'missing_returns_id' };
+
+  const cookieStr = String(cookie || '').trim();
+
+  if (!cookieStr) return { ok: false, error: 'missing_cookie' };
+
+
+
+  const pid = String(packageId || '').trim();
+
+  const url = `https://ark.xiaohongshu.com/api/edith/after-sales/returns_v3/${encodeURIComponent(rid)}`;
+
+  const shopConfig = { cookie: cookieStr, userAgent: DEFAULT_UA, lastPackageId: pid };
+
+  const tokenHeaders = buildFallbackHeaders(cookieStr, pid);
+
+  if (tokenHeaders) {
+
+    tokenHeaders.Referer = pid
+
+      ? `https://walle.xiaohongshu.com/cstools/tools/packages/${pid}`
+
+      : 'https://walle.xiaohongshu.com/cstools/seller/dashboard';
+
+    try {
+
+      const tokenTry = await requestPackageDetail(url, tokenHeaders);
+
+      if (tokenTry.ok) {
+
+        return {
+
+          ok: true,
+
+          data: tokenTry.json.data || {},
+
+          via: 'token-only',
+
+          status: tokenTry.res.status,
+
+        };
+
+      }
+
+      if (!isAuthOrSignFailure(tokenTry.res.status, tokenTry.json, tokenTry.text)) {
+
+        return {
+
+          ok: false,
+
+          status: tokenTry.res.status,
+
+          error: tokenTry.json?.msg || tokenTry.json?.message || tokenTry.text.slice(0, 200) || `HTTP ${tokenTry.res.status}`,
+
+          via: 'token-only',
+
+        };
+
+      }
+
+    } catch {
+
+      /* fall through */
+
+    }
+
+  }
+
+
+
+  const signed = buildSignedHeaders(shopConfig, url, pid);
+
+  if (!signed?.headers) {
+
+    return {
+
+      ok: false,
+
+      error: signed?.error?.message || 'headers_build_failed',
+
+      via: tokenHeaders ? 'token-only-then-sign-fail' : 'no-token-no-sign',
+
+    };
+
+  }
+
+
+
+  try {
+
+    const signedTry = await requestPackageDetail(url, signed.headers);
+
+    if (signedTry.ok) {
+
+      return {
+
+        ok: true,
+
+        data: signedTry.json.data || {},
+
+        via: signed.via,
+
+        status: signedTry.res.status,
+
+      };
+
+    }
+
+    return {
+
+      ok: false,
+
+      status: signedTry.res.status,
+
+      error: signedTry.json?.msg || signedTry.json?.message || signedTry.text.slice(0, 200) || `HTTP ${signedTry.res.status}`,
+
+      via: signed.via,
+
+    };
+
+  } catch (err) {
+
+    return { ok: false, error: String(err.message || err), via: signed.via };
+
+  }
+
+}
+
+
+
 module.exports = {
 
   fetchPackageDetailByCookie,
+
+  fetchReturnsV3ByCookie,
 
   buildFallbackHeaders,
 

@@ -3,7 +3,7 @@
  * 由 src/auto-inject.js 通过 CDP 自动注入。
  */
 (function qfSfFeeInlineBootstrap() {
-  const VERSION = '2.1.6';
+  const VERSION = '2.1.8';
   const STORAGE_KEY = 'qf_sf_fee_config_v1';
   const STYLE_ID = 'qf-sf-fee-inline-style';
   const SF_PROD = 'https://sfapi.sf-express.com/std/service';
@@ -21,6 +21,9 @@
   const packageDetailFetchedAt = new Map();
   const packageDetailInflight = new Map();
   const packageDetailCache = new Map();
+  const afterSaleApiCache = new Map();
+  const afterSaleFetchedAt = new Map();
+  const afterSaleInflight = new Map();
   const cardJobs = new Map();
   const cardRenderCache = new Map();
   const cardRetryCount = new Map();
@@ -88,6 +91,9 @@
     packageDetailInflight.clear();
     packageDetailCache.clear();
     packageDetailFetchedAt.clear();
+    afterSaleApiCache.clear();
+    afterSaleFetchedAt.clear();
+    afterSaleInflight.clear();
     cardRenderCache.clear();
     cardRetryCount.clear();
     cardStableKeys.clear();
@@ -147,6 +153,10 @@
     }
     delete window.__qsfInlineFetchHooked;
     delete window.__qsfInlineNativeFetch;
+  }
+
+  function isAfterSaleApiUrl(url) {
+    return /after-sales\/returns_v3\//i.test(String(url || ''));
   }
 
   function isPackageDetailUrl(url) {
@@ -472,29 +482,73 @@
   }
 
   function pickAfterSaleFromPackageDetail(data) {
-    const direct = pickAfterSaleFromData(data);
-    if (resolveRefundApplyAmount(direct)) return direct;
+    return pickAfterSaleFromData(data);
+  }
 
-    const pay = parseMoneyYuan(data.customer_pay_amount ?? data.customerPayAmount);
-    const sku = Array.isArray(data.sku_snapshots) ? data.sku_snapshots[0] : null;
-    const skuPay = parseMoneyYuan(sku?.sku_pay_amount ?? sku?.total_price);
-    const hasReturnSignal = Boolean(
-      (Array.isArray(data.return_info) && data.return_info.length)
-      || sku?.return_type
-      || /退|售后|关闭/.test(String(data.erp_status_str || sku?.status_name || '')),
-    );
-    if (!hasReturnSignal) return direct;
-
-    const applyAmount = skuPay ?? pay;
-    if (applyAmount == null) return direct;
-
+  function parseReturnsV3Response(json) {
+    const raw = json?.data?.after_sale || json?.data;
+    if (!raw || typeof raw !== 'object') return null;
+    const returnsId = String(raw.returns_id || raw.returnsId || '').trim();
+    const packageId = String(raw.package_id || raw.packageId || '').trim();
     return normalizeAfterSale({
-      type: sku?.return_type ? '退货' : '售后',
-      status: sku?.status_name || data.erp_status_str || direct?.status || '',
-      refundApplyAmount: applyAmount,
-      paidAmount: pay,
-      pendingRefund: true,
-    }) || direct;
+      type: raw.returns_type_name || raw.type || '售后',
+      status: raw.status_name || String(raw.status || ''),
+      refundApplyAmount: raw.expect_refund_fee ?? raw.expectRefundFee,
+      refundActualAmount: raw.refund_fee ?? raw.refundFee,
+      returnsId,
+      packageId,
+      fromAfterSaleApi: true,
+    });
+  }
+
+  function afterSaleCacheKey(returnsId) {
+    return `${activeSessionKey || 'none'}:${String(returnsId || '').trim()}`;
+  }
+
+  function extractReturnsIdFromCard(card) {
+    if (!card) return '';
+    const html = card.innerHTML || '';
+    const m = html.match(/\b(R\d{10,})\b/);
+    return m ? m[1] : '';
+  }
+
+  function cardOrderStatusText(card, detail) {
+    const parts = [
+      card?.querySelector('.order-card-title-status')?.textContent,
+      card?.querySelector('.order-card-title-tag')?.textContent,
+      card?.querySelector('.order-card-title')?.textContent,
+      detail?.erpStatus,
+    ];
+    return parts.map((s) => String(s || '').trim()).filter(Boolean).join(' ');
+  }
+
+  function isOrderCancelled(card, detail) {
+    return /已取消|取消发货/.test(cardOrderStatusText(card, detail));
+  }
+
+  function hasLogisticsNumber(expressNos, rawExpress) {
+    return Boolean(expressNos?.length || rawExpress);
+  }
+
+  function shouldShowNoExpress(card, detail, expressNos, rawExpress) {
+    if (isOrderCancelled(card, detail)) return true;
+    return !hasLogisticsNumber(expressNos, rawExpress);
+  }
+
+  function mergeAfterSaleSources(pkgSale, returnsSale) {
+    if (!pkgSale && !returnsSale) return null;
+    if (!pkgSale) return returnsSale;
+    if (!returnsSale) return pkgSale;
+    return {
+      ...pkgSale,
+      ...returnsSale,
+      refundApplyAmount: returnsSale.refundApplyAmount ?? pkgSale.refundApplyAmount,
+      refundActualAmount: returnsSale.refundActualAmount ?? pkgSale.refundActualAmount,
+      status: returnsSale.status || pkgSale.status,
+      type: returnsSale.type || pkgSale.type,
+      fromAfterSaleApi: returnsSale.fromAfterSaleApi ?? pkgSale.fromAfterSaleApi,
+      fromReturnInfo: pkgSale.fromReturnInfo && !returnsSale.fromAfterSaleApi,
+    };
   }
 
   function resolveRefundApplyAmount(afterSale) {
@@ -503,10 +557,7 @@
   }
 
   function resolveRefundDisplayAmount(afterSale) {
-    const apply = resolveRefundApplyAmount(afterSale);
-    if (apply != null) return apply;
-    if (afterSale?.refundActualAmount != null) return afterSale.refundActualAmount;
-    return null;
+    return resolveRefundApplyAmount(afterSale);
   }
 
   function resolvePaidAmount(card, afterSale, packageDetail) {
@@ -548,10 +599,12 @@
       ? assessRefundWarning(paidAmount, applyOnly)
       : { rowKind: '', suffix: '', title: '' };
     const parts = [];
-    if (afterSale?.fromReturnInfo && afterSale?.refundApplyAmount != null) {
+    if (afterSale?.fromAfterSaleApi && afterSale?.refundApplyAmount != null) {
+      parts.push('来自售后 API expect_refund_fee');
+    } else if (afterSale?.fromReturnInfo && afterSale?.refundApplyAmount != null) {
       parts.push('来自订单 API return_info');
     } else if (afterSale?.pendingRefund) {
-      parts.push('售后进行中，显示申请参考金额');
+      parts.push('售后进行中，等待售后 API');
     } else if (afterSale?.refundApplyAmount != null) {
       parts.push('来自订单 API 申请金额');
     } else if (afterSale?.refundActualAmount != null) {
@@ -579,12 +632,13 @@
 
   function mergePackageDetailCache(packageId, parsed) {
     const ck = detailCacheKey(packageId);
-    const prev = packageDetailCache.get(ck) || { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null };
+    const prev = packageDetailCache.get(ck) || { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null, erpStatus: '' };
     return {
       expressNos: parsed.expressNos?.length ? parsed.expressNos : prev.expressNos,
       rawExpress: parsed.rawExpress || prev.rawExpress || '',
       afterSale: mergeAfterSalePreferApi(prev.afterSale, parsed.afterSale),
       paidAmount: parsed.paidAmount ?? prev.paidAmount,
+      erpStatus: parsed.erpStatus || prev.erpStatus || '',
     };
   }
 
@@ -617,6 +671,20 @@
     scheduleScan();
   }
 
+  function ingestAfterSaleV3Json(json, url) {
+    const parsed = parseReturnsV3Response(json);
+    if (!parsed?.returnsId) return;
+    const ck = afterSaleCacheKey(parsed.returnsId);
+    const prev = afterSaleApiCache.get(ck);
+    if (prev?.refundApplyAmount != null && parsed.refundApplyAmount == null) return;
+    afterSaleApiCache.set(ck, parsed);
+    afterSaleFetchedAt.set(ck, Date.now());
+    if (parsed.packageId && cardStableKeys.has(stableKey(parsed.packageId))) {
+      /* still refresh — apply amount may have arrived */
+    }
+    scheduleScan();
+  }
+
   function hookFetchForRefund() {
     unhookFetch();
     window.__qsfInlineNativeFetch = window.fetch.bind(window);
@@ -629,6 +697,8 @@
         const u = typeof input === 'string' ? input : (input && input.url) || '';
         if (isPackageDetailUrl(u)) {
           res.clone().json().then((json) => ingestRefundJson(json)).catch(() => {});
+        } else if (isAfterSaleApiUrl(u)) {
+          res.clone().json().then((json) => ingestAfterSaleV3Json(json, u)).catch(() => {});
         }
       } catch { /* ignore */ }
       return res;
@@ -643,35 +713,8 @@
     return /退款|退货|换货|售后/.test(card.innerText || '');
   }
 
-  function extractAfterSaleFromCard(card) {
-    if (!card) return null;
-    const box = card.querySelector('.after-sale-box, .sku-after-sale');
-    const text = (box || card).innerText || card.innerText || '';
-    if (!box && !cardHasAfterSaleSignals(card)) return null;
-    const statusText = (card.querySelector('.sku-after-sale-status')?.textContent || '').trim();
-    const refundApplyMatch = text.match(/申请金额\s*[¥￥]?\s*(\d+(?:\.\d{1,2})?)/);
-    const refundDoneMatch = text.match(/(\d+(?:\.\d{1,2})?)元已退款成功/);
-    return normalizeAfterSale({
-      type: (statusText.match(/(退货|退款|换货)/) || text.match(/(退货|退款|换货)/))?.[1] || '售后',
-      status: statusText,
-      refundApplyAmount: refundApplyMatch ? refundApplyMatch[1] : null,
-      refundActualAmount: refundDoneMatch ? refundDoneMatch[1] : null,
-    });
-  }
-
   function mergeAfterSalePreferApi(domSale, apiSale) {
-    if (!domSale && !apiSale) return null;
-    if (!domSale) return apiSale;
-    if (!apiSale) return domSale;
-    return {
-      ...domSale,
-      ...apiSale,
-      refundApplyAmount: apiSale.refundApplyAmount ?? domSale.refundApplyAmount,
-      refundActualAmount: apiSale.refundActualAmount ?? domSale.refundActualAmount,
-      paidAmount: apiSale.paidAmount ?? domSale.paidAmount,
-      pendingRefund: apiSale.pendingRefund ?? domSale.pendingRefund,
-      fromReturnInfo: apiSale.fromReturnInfo ?? domSale.fromReturnInfo,
-    };
+    return mergeAfterSaleSources(domSale, apiSale);
   }
 
   function formatYuan(n) {
@@ -841,7 +884,7 @@
 
   function parsePackageDetail(data) {
     if (!data || typeof data !== 'object') {
-      return { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null };
+      return { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null, erpStatus: '' };
     }
     const expressNos = pickExpressFromPackageDetail(data);
     const rawExpress = pickRawExpressFromPackageDetail(data);
@@ -849,17 +892,63 @@
     const sku = Array.isArray(data.sku_snapshots) ? data.sku_snapshots[0] : null;
     const paidAmount = parseMoneyYuan(data.customer_pay_amount ?? data.customerPayAmount)
       ?? parseMoneyYuan(sku?.sku_pay_amount ?? sku?.total_price);
-    return { expressNos, rawExpress, afterSale, paidAmount };
+    const erpStatus = String(data.erp_status_str || data.erpStatus || sku?.status_name || '').trim();
+    return { expressNos, rawExpress, afterSale, paidAmount, erpStatus };
+  }
+
+  function buildAfterSaleProxyUrl(returnsId, packageId) {
+    const rid = encodeURIComponent(String(returnsId || '').trim());
+    const pid = encodeURIComponent(String(packageId || '').trim());
+    const port = Number(window.__qfPackageProxyPort || 4725);
+    const base = `http://127.0.0.1:${port}`;
+    const shopTitle = String(document.title || '').replace(/-工作台\s*$/, '').trim();
+    const qs = new URLSearchParams({ returnsId: String(returnsId || '').trim(), packageId: String(packageId || '').trim() });
+    if (shopTitle) qs.set('shopTitle', shopTitle);
+    return `${base}/after-sale?${qs.toString()}`;
+  }
+
+  async function fetchAfterSaleFromApi(returnsId, packageId, force = false) {
+    const rid = String(returnsId || '').trim();
+    if (!rid) return null;
+    const ck = afterSaleCacheKey(rid);
+    const cached = afterSaleApiCache.get(ck);
+    const lastAt = afterSaleFetchedAt.get(ck) || 0;
+    if (!force && cached && Date.now() - lastAt < PKG_DETAIL_COOLDOWN_MS) return cached;
+
+    if (afterSaleInflight.has(ck)) return afterSaleInflight.get(ck);
+
+    const job = (async () => {
+      try {
+        const res = await fetch(buildAfterSaleProxyUrl(rid, packageId));
+        const envelope = await res.json().catch(() => null);
+        if (envelope?.ok && envelope.data) {
+          const parsed = parseReturnsV3Response(envelope);
+          if (parsed) {
+            afterSaleFetchedAt.set(ck, Date.now());
+            afterSaleApiCache.set(ck, parsed);
+            return parsed;
+          }
+        }
+      } catch { /* ignore */ }
+      return cached || null;
+    })();
+
+    afterSaleInflight.set(ck, job);
+    try {
+      return await job;
+    } finally {
+      afterSaleInflight.delete(ck);
+    }
   }
 
   async function fetchPackageDetailFromApi(packageId, force = false) {
     const pid = String(packageId || '').trim();
-    if (!pid) return { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null };
+    if (!pid) return { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null, erpStatus: '' };
 
     const ck = detailCacheKey(pid);
     const sk = stableKey(pid);
     if (cardStableKeys.has(sk) && !force) {
-      return packageDetailCache.get(ck) || { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null };
+      return packageDetailCache.get(ck) || { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null, erpStatus: '' };
     }
 
     const cached = packageDetailCache.get(ck);
@@ -885,7 +974,7 @@
           return parsed;
         }
       } catch { /* ignore */ }
-      return { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null };
+      return { expressNos: [], rawExpress: '', afterSale: null, paidAmount: null, erpStatus: '' };
     })();
 
     packageDetailInflight.set(inflightKey, job);
@@ -1006,7 +1095,8 @@
     cardJobs.set(jobKey, 'running');
 
     const wrap = ensureFeeWrap(card);
-    const hasAfterSale = cardHasAfterSaleSignals(card);
+    const returnsId = extractReturnsIdFromCard(card);
+    const hasAfterSale = cardHasAfterSaleSignals(card) || Boolean(returnsId);
     const cachedRender = cardRenderCache.get(renderCacheKey(packageId));
 
     if (!silent && !cachedRender) {
@@ -1021,15 +1111,22 @@
 
       let expressNos = extractExpressFromCard(card);
       let rawExpress = extractRawExpressFromCard(card);
-      let afterSale = extractAfterSaleFromCard(card);
+      let afterSale = null;
       let paidAmount = null;
+      let erpStatus = '';
       const detailCk = detailCacheKey(packageId);
       const cachedDetail = packageDetailCache.get(detailCk);
       if (cachedDetail) {
         if (cachedDetail.expressNos?.length && !expressNos.length) expressNos = cachedDetail.expressNos;
         if (cachedDetail.rawExpress && !rawExpress) rawExpress = cachedDetail.rawExpress;
-        afterSale = mergeAfterSalePreferApi(afterSale, cachedDetail.afterSale);
+        afterSale = cachedDetail.afterSale || null;
         paidAmount = cachedDetail.paidAmount ?? null;
+        erpStatus = cachedDetail.erpStatus || '';
+      }
+
+      if (returnsId) {
+        const cachedAfterSale = afterSaleApiCache.get(afterSaleCacheKey(returnsId));
+        afterSale = mergeAfterSaleSources(afterSale, cachedAfterSale);
       }
 
       let needApi = !packageDetailCache.has(detailCk) || opts.forceApi === true;
@@ -1044,8 +1141,15 @@
         if (isSessionStale(gen)) return;
         if (detail?.expressNos?.length) expressNos = detail.expressNos;
         if (detail?.rawExpress && !rawExpress) rawExpress = detail.rawExpress;
-        afterSale = mergeAfterSalePreferApi(afterSale, detail?.afterSale || null);
+        afterSale = mergeAfterSaleSources(afterSale, detail?.afterSale || null);
         paidAmount = detail?.paidAmount ?? paidAmount;
+        erpStatus = detail?.erpStatus || erpStatus;
+      }
+
+      if (returnsId) {
+        const returnsSale = await fetchAfterSaleFromApi(returnsId, packageId, opts.forceApi === true);
+        if (isSessionStale(gen)) return;
+        afterSale = mergeAfterSaleSources(afterSale, returnsSale);
       }
       if (!rawExpress) rawExpress = extractRawExpressFromCard(card);
       paidAmount = resolvePaidAmount(card, afterSale, { paidAmount });
@@ -1053,12 +1157,17 @@
       const blocks = [];
       const cfg = loadConfig();
       let sfFeeTotal = null;
-      const nonSfExpress = isNonSfExpress(rawExpress);
+      const detailCtx = { erpStatus };
+      const noExpress = shouldShowNoExpress(card, detailCtx, expressNos, rawExpress);
+      const nonSfExpress = !noExpress && isNonSfExpress(rawExpress);
 
-      if (nonSfExpress) {
+      if (noExpress) {
+        const title = isOrderCancelled(card, detailCtx) ? '订单已取消' : '无物流单号';
+        blocks.push({ label: '月结费用：', text: '无单号', kind: 'muted', title });
+      } else if (nonSfExpress) {
         blocks.push({ label: '月结费用：', text: '非顺丰', kind: 'muted', title: `运单 ${rawExpress}` });
       } else if (!expressNos.length) {
-        blocks.push({ label: '月结费用：', text: '查询中…', kind: 'loading' });
+        blocks.push({ label: '月结费用：', text: '无单号', kind: 'muted', title: '无顺丰运单号' });
       } else {
         let feeFallback = null;
         for (const no of expressNos) {
@@ -1100,6 +1209,8 @@
           });
           const profitBlock = buildProfitBlock(paidAmount, refundApplyAmt, sfFeeTotal, meta.rowKind);
           if (profitBlock) blocks.push(profitBlock);
+        } else if (hasAfterSale && (returnsId || afterSale)) {
+          blocks.push({ label: '用户申请退款金额：', text: '查询中…', kind: 'loading' });
         } else {
           blocks.push({ label: '用户申请退款金额：', text: '—', kind: 'muted' });
         }
@@ -1119,14 +1230,16 @@
       } else if (!wrap.querySelector('.qsf-inline-fee-row')) {
         renderCardInfo(wrap, blocks);
       }
-      if (!hasLoading && (expressNos.length || nonSfExpress) && (!hasAfterSale || refundDisplayAmt != null)) {
+      if (!hasLoading && (noExpress || expressNos.length || nonSfExpress) && (!hasAfterSale || refundApplyAmt != null || !returnsId)) {
         cardStableKeys.add(sk);
       }
 
       const retries = cardRetryCount.get(packageId) || 0;
-      const shouldRetryExpress = !nonSfExpress && !hasLoading && !expressNos.length && !cardStableKeys.has(sk)
-        && card.isConnected && retries < MAX_CARD_RETRY;
-      if (shouldRetryExpress) {
+      const needRefundRetry = hasAfterSale && returnsId && refundApplyAmt == null && retries < MAX_CARD_RETRY;
+      const needReturnsIdRetry = hasAfterSale && !returnsId && retries < MAX_CARD_RETRY;
+      const shouldRetryExpress = !noExpress && !nonSfExpress && !hasLoading && !expressNos.length
+        && !cardStableKeys.has(sk) && card.isConnected && retries < MAX_CARD_RETRY;
+      if ((shouldRetryExpress || needRefundRetry || needReturnsIdRetry) && card.isConnected) {
         cardRetryCount.set(packageId, retries + 1);
         cardJobs.delete(jobKey);
         const prevTimer = cardRetryTimers.get(packageId);
