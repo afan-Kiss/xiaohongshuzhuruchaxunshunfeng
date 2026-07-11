@@ -8,8 +8,9 @@ const {
   normalizePackageDetail,
   normalizeAfterSale,
   normalizeSfFee,
+  mergeSfWaybillResults,
   mergeCardDto,
-  pickSfWaybill,
+  pickSfWaybills,
 } = require('./normalizers');
 const { fetchPackageDetailByCookie, fetchReturnsV3ByCookie } = require('../qianfan-package-api');
 const {
@@ -416,34 +417,48 @@ function createDataCore(options = {}) {
     }
 
     const returnsId = hints.returnsId;
+    const waybills = pickSfWaybills(hints.expressNos);
+    const parallel = [];
+
     if (returnsId) {
-      try {
-        const asRes = await fetchAfterSale(shopKey, returnsId, packageId, force);
-        afterPart = asRes.data;
-        stale = stale || asRes.stale;
-      } catch (e) {
-        if (!err) {
-          err = e.message;
-          errCode = e.code || 'upstream_error';
-        }
-      }
+      parallel.push(
+        fetchAfterSale(shopKey, returnsId, packageId, force)
+          .then((asRes) => {
+            afterPart = asRes.data;
+            stale = stale || asRes.stale;
+          })
+          .catch((e) => {
+            if (!err) {
+              err = e.message;
+              errCode = e.code || 'upstream_error';
+            }
+          }),
+      );
     }
 
-    const waybill = pickSfWaybill(hints.expressNos);
-    if (waybill) {
-      try {
-        const sfRes = await fetchSfFee(waybill, force);
-        sfPart = sfRes.data;
-        stale = stale || sfRes.stale;
-      } catch (e) {
-        if (!err) {
-          err = e.message;
-          errCode = e.code || 'upstream_error';
-        }
-      }
-    } else if (!waybill && hints.expressNos.length) {
-      sfPart = { sfFee: null, error: '非顺丰运单', errorCode: 'not_applicable', waybill: '' };
+    if (waybills.length) {
+      parallel.push(
+        Promise.all(waybills.map((wb) => fetchSfFee(wb, force)))
+          .then((sfResults) => {
+            const merged = mergeSfWaybillResults(sfResults.map((r) => r.data));
+            sfPart = merged;
+            stale = stale || sfResults.some((r) => r.stale);
+          })
+          .catch((e) => {
+            if (!err) {
+              err = e.message;
+              errCode = e.code || 'upstream_error';
+            }
+          }),
+      );
+    } else if (hints.expressNos.length) {
+      sfPart = mergeSfWaybillResults([]);
+      sfPart.error = '非顺丰运单';
+      sfPart.errorCode = 'not_applicable';
+      sfPart.state = 'not_applicable';
     }
+
+    if (parallel.length) await Promise.all(parallel);
 
     const dto = mergeCardDto({
       hints,
@@ -454,7 +469,7 @@ function createDataCore(options = {}) {
       errorCode: errCode,
       stale,
       source,
-      state: stale ? 'stale' : errCode || 'fresh',
+      state: stale ? 'stale' : sfPart?.state || errCode || 'fresh',
       updatedAt: Date.now(),
     });
     return dto;

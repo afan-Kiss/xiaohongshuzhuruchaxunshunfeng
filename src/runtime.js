@@ -10,6 +10,7 @@ const { createRuntimeState, VERSION } = require('./core/runtime-state');
 const { validateWebStatus } = require('./core/web-identity');
 const { startInjectionDaemon, loadInjectConfig } = require('./injection-daemon');
 const { createServer: createFeeWebServer } = require('../shunfengchafeiyong/server');
+const { createRuntimeOwner, removeRuntimeOwnerIfOwned } = require('./core/runtime-owner');
 const { loadConfig } = require('./load-config');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -80,6 +81,13 @@ async function main() {
   }
 
   runtimeState.setFlags({ processAlive: true, coreReady: true });
+
+  createRuntimeOwner({
+    root: ROOT,
+    service: 'qf-sf-data-core',
+    version: VERSION,
+    instanceId: runtimeState.instanceId,
+  });
 
   const feePort = webCfg.webPort;
   const basePath = webCfg.basePath;
@@ -182,6 +190,10 @@ async function main() {
       }
     });
     dataCore.close();
+    removeRuntimeOwnerIfOwned(ROOT, {
+      pid: process.pid,
+      instanceId: runtimeState.instanceId,
+    });
     setTimeout(() => process.exit(code), 200);
   }
 

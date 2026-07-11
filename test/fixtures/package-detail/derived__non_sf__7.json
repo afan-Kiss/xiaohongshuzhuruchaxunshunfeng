@@ -1,0 +1,154 @@
+{
+  "meta": {
+    "shopKey": "hetianyayu",
+    "tags": [
+      "non_sf"
+    ],
+    "source": "derived_from_upstream",
+    "units": {
+      "customer_pay_amount": "yuan"
+    }
+  },
+  "data": {
+    "pay_infos": [
+      {
+        "pay_method": "支付宝",
+        "term_num": 0,
+        "total_fee": 0
+      }
+    ],
+    "customer_rest_amount": 0,
+    "relation_packages": [],
+    "status": 71,
+    "user_id": "5efaa1a10000000001001487",
+    "total_member_discount": 0,
+    "seller_id": "6a195ac98228a600152aa204",
+    "cancel_applied": false,
+    "address": "[ADDRESS]",
+    "phone": "138****0000",
+    "pay_method": "支付宝",
+    "return_info": [
+      {
+        "return_amt": 899,
+        "package_id": "P_FIXTURE_7",
+        "fail_description": "",
+        "time": "2026-07-11 18:20:19",
+        "status_str": "退款成功",
+        "type": "退货退款",
+        "record_id": "U_FIXTURE",
+        "finish_at": "2026-07-11 18:20:19",
+        "return_method": "支付宝",
+        "trade_no": "U_FIXTURE"
+      }
+    ],
+    "total_quantity": 1,
+    "is_self_merchant": false,
+    "order_id": "U_FIXTURE",
+    "erp_status_str": "已关闭",
+    "total_promotion_discount": 0,
+    "package_type": "normal",
+    "pay_time": 1782982502,
+    "contract_ship_hour": 0,
+    "decryptResultDetailType": 0,
+    "expect_send_time": "2026-07-04",
+    "total_tax_amount": 0,
+    "deal_price": 899,
+    "express_company": "顺丰速运",
+    "send_from": "中国大陆",
+    "user_name": "[NAME]",
+    "whname": "[NAME]",
+    "logistics_mode": "内贸",
+    "package_id": "P_FIXTURE_7",
+    "trans_price": 18,
+    "seller_name": "[NAME]",
+    "create_time": 1782982497,
+    "pay_status": 1,
+    "customer_pay_amount": 520,
+    "finish_time": 0,
+    "user_note_time": 0,
+    "ship_time_format": "晚发必赔，最晚07月04日16:55发货",
+    "whcode": "CPartner",
+    "free_shipping_threshold": 0,
+    "express_number": "YT1234567890",
+    "total_coupon_discount": 0,
+    "cancel_records": [],
+    "total_member_tax_discount": 0,
+    "canCurrentCsaReadAddr": true,
+    "delivery_packages": [
+      {
+        "express_no": "YT1234567890",
+        "express_company_code": "yuantong",
+        "express_company_name": "[NAME]",
+        "delivery_package_id": "P_FIXTURE_NON_SF"
+      }
+    ],
+    "raw_price": 899,
+    "sku_snapshots": [
+      {
+        "sku_id": "6a46274e98d31b00153c12a0",
+        "sku_boutique_info": {
+          "boutique_mode_code": 0,
+          "delivery_time_min": 0,
+          "delivery_time_max": 0,
+          "vendor_type": 0,
+          "separate": false
+        },
+        "total_raw_price": 899,
+        "categories": [
+          {
+            "id": "65f997603e946300016b3469",
+            "name": "[NAME]",
+            "ename": "[NAME]",
+            "version": 0,
+            "level": 1
+          },
+          {
+            "version": 0,
+            "level": 2,
+            "id": "65f997603e946300016b3478",
+            "name": "[NAME]",
+            "ename": "[NAME]"
+          },
+          {
+            "level": 3,
+            "id": "65f997613e946300016b3482",
+            "name": "[NAME]",
+            "ename": "[NAME]",
+            "version": 0
+          }
+        ],
+        "status_name": "[NAME]",
+        "return_type": 1,
+        "item_id": "6a46274e98d31b00153c129f",
+        "name": "[NAME]",
+        "distributor_name": "[NAME]",
+        "sku_sale_price": 899,
+        "sku_pay_amount": 917,
+        "total_price": 899,
+        "presale_ship_date": "",
+        "ret_exg_policy": {
+          "state": 0,
+          "title": "7天无理由退货",
+          "desc": "满足相应条件时，消费者可申请“七天无理由退货”。"
+        },
+        "tax_amount": 0,
+        "raw_price": 899,
+        "platform_discount_amount": 0,
+        "seller_discount_amount": 0,
+        "price": 899,
+        "scsku_code": "6a46274e98d31b00153c12a1",
+        "distributor_id": "68998c30000000002900ae2c",
+        "image": "//qimg.xiaohongshu.com/arkgoods/1040g0ao32243kb58nk405q4phgoa9bhc6dtn0j0?itemId=6a46274e98d31b00153c12a0&imageView2/1/w/320/h/320/q/90.jpg",
+        "quantity": 1,
+        "sku_deposit_amount": 0,
+        "sell_guarantee_infos": [
+          "7天无理由退货",
+          "极速退款",
+          "晚发必赔"
+        ]
+      }
+    ],
+    "total_deposit_amount": 917,
+    "is_deposit_presale": false
+  }
+}

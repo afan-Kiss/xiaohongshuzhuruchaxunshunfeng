@@ -1,69 +1,126 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
 const {
   parseMoneyYuan,
   extractReturnsId,
+  extractReturnsIdFromReturnInfoItem,
   normalizePackageDetail,
   normalizeAfterSale,
+  mergeSfWaybillResults,
   mergeCardDto,
+  pickSfWaybills,
 } = require('../../src/core/normalizers');
 
-describe('normalizers', () => {
-  it('parseMoneyYuan handles yuan symbols without magnitude guess', () => {
-    assert.equal(parseMoneyYuan(12.5), 12.5);
-    assert.equal(parseMoneyYuan('￥1,680'), 1680);
-    assert.equal(parseMoneyYuan(168000), 168000);
+const FIXTURE_DIR = path.join(__dirname, '..', 'fixtures', 'package-detail');
+
+function loadFixture(name) {
+  const file = path.join(FIXTURE_DIR, name);
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  return raw.data;
+}
+
+describe('normalizers v3.0.4', () => {
+  it('parseMoneyYuan keeps 16800 and 26800 yuan', () => {
     assert.equal(parseMoneyYuan(16800), 16800);
-    assert.equal(parseMoneyYuan(''), null);
-    assert.equal(parseMoneyYuan(null), null);
+    assert.equal(parseMoneyYuan(26800), 26800);
+    assert.equal(parseMoneyYuan('￥1,680'), 1680);
   });
 
-  it('keeps returnsId from package detail return_info', () => {
-    const pkg = normalizePackageDetail({
-      package_id: 'P123',
-      return_info: { returns_id: 'R999', return_amt: 1999 },
-      paid_amount: 2000,
-    });
-    assert.equal(pkg.returnsId, 'R999');
-    assert.equal(pkg.refundApplyAmount, 1999);
+  it('extractReturnsId ignores generic id', () => {
+    assert.equal(extractReturnsId({ id: 'R_SHOULD_NOT', package_id: 'P1' }), '');
+    assert.equal(extractReturnsId({ returns_id: 'R1' }), 'R1');
   });
 
-  it('normalizeAfterSale preserves returnsId', () => {
-    const as = normalizeAfterSale({
-      after_sale: {
-        returns_id: 'R555',
-        applied_amount: 1099,
-        status_name: '退款中',
-      },
-    }, { packageId: 'P1' });
-    assert.equal(as.returnsId, 'R555');
-    assert.equal(as.refundApplyAmount, 1099);
+  it('package raw.id without after-sale fields yields empty returnsId', () => {
+    const file = fs.readdirSync(FIXTURE_DIR).find((f) => f.includes('raw_id_present'));
+    const pkg = normalizePackageDetail(loadFixture(file));
+    assert.equal(pkg.returnsId, '');
   });
 
-  it('returns_v3 applied_skus + ship fee', () => {
-    const as = normalizeAfterSale({
-      returns_id: 'R1',
-      applied_skus_amount_sum: 100000,
-      applied_ship_fee_amount: 800,
-    });
-    assert.equal(as.refundApplyAmount, 1008);
-    assert.equal(as.returnsId, 'R1');
+  it('package_id is not used as returnsId', () => {
+    const pkg = normalizePackageDetail({ package_id: 'P123', id: 'P123' });
+    assert.equal(pkg.returnsId, '');
   });
 
-  it('mergeCardDto prefers after-sale refund over package', () => {
+  it('real hetianyayu fixture parses customer_pay_amount yuan + delivery_packages', () => {
+    const file = fs.readdirSync(FIXTURE_DIR).find((f) => f.startsWith('hetianyayu__sf_'));
+    assert.ok(file);
+    const pkg = normalizePackageDetail(loadFixture(file));
+    assert.equal(pkg.paidAmount, 917);
+    assert.ok(pkg.expressNos.length >= 1);
+    assert.equal(pkg.packages.length, 1);
+    assert.equal(pkg.packages[0].isSf, true);
+  });
+
+  it('high value fixtures stay in yuan', () => {
+    const f168 = fs.readdirSync(FIXTURE_DIR).find((f) => f.includes('yuan_16800'));
+    const f268 = fs.readdirSync(FIXTURE_DIR).find((f) => f.includes('yuan_26800'));
+    assert.equal(normalizePackageDetail(loadFixture(f168)).paidAmount, 16800);
+    assert.equal(normalizePackageDetail(loadFixture(f268)).paidAmount, 26800);
+  });
+
+  it('return_info array picks active refunding record', () => {
+    const file = fs.readdirSync(FIXTURE_DIR).find((f) => f.includes('return_info_array_refunding'));
+    const pkg = normalizePackageDetail(loadFixture(file));
+    assert.equal(pkg.refundApplyAmount, 200);
+    assert.match(pkg.afterSaleStatus, /退款中/);
+    assert.equal(pkg.returnsId, '');
+  });
+
+  it('multi sf waybills extracted', () => {
+    const file = fs.readdirSync(FIXTURE_DIR).find((f) => f.includes('multi_sf_multi_package'));
+    const pkg = normalizePackageDetail(loadFixture(file));
+    assert.equal(pkg.expressNos.length, 2);
+    assert.equal(pkg.packages.length, 2);
+  });
+
+  it('returns_v3 applied_amount yuan + ship fen', () => {
+    const retFiles = fs.readdirSync(path.join(__dirname, '..', 'fixtures', 'returns-v3'));
+    const file = retFiles.find((f) => f.includes('hetianyayu'));
+    const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'returns-v3', file), 'utf8'));
+    const as = normalizeAfterSale(raw.data, { returnsId: 'R_FIXTURE_2' });
+    assert.equal(as.returnsId, 'R_FIXTURE_2');
+    assert.equal(as.refundApplyAmount, 899);
+  });
+
+  it('mergeSfWaybillResults sums fees and marks partial', () => {
+    const merged = mergeSfWaybillResults([
+      { waybill: 'SF001', sfFee: 18, errorCode: null },
+      { waybill: 'SF002', sfFee: null, error: 'fail', errorCode: 'upstream_error' },
+    ]);
+    assert.equal(merged.sfFee, 18);
+    assert.equal(merged.state, 'partial');
+    assert.equal(merged.sfFeeComplete, false);
+    assert.equal(merged.sfSuccessCount, 1);
+    assert.equal(merged.sfFailedCount, 1);
+  });
+
+  it('mergeCardDto withholds profit until sf complete', () => {
     const dto = mergeCardDto({
-      hints: { packageId: 'P1', returnsId: 'R1' },
-      package: { refundApplyAmount: 100, returnsId: 'R1', paidAmount: 1900 },
-      afterSale: { refundApplyAmount: 1880, returnsId: 'R1', paidAmount: 1900 },
-      sf: { sfFee: 13 },
+      hints: { packageId: 'P1' },
+      package: { paidAmount: 1000, refundApplyAmount: 900 },
+      sf: mergeSfWaybillResults([
+        { waybill: 'SF1', sfFee: 10, errorCode: null },
+        { waybill: 'SF2', sfFee: null, errorCode: 'upstream_error', error: 'x' },
+      ]),
     });
-    assert.equal(dto.refundApplyAmount, 1880);
-    assert.equal(dto.sfFee, 13);
-    assert.equal(dto.profit, 7);
+    assert.equal(dto.sfFee, 10);
+    assert.equal(dto.state, 'partial');
+    assert.equal(dto.profit, null);
+    assert.equal(dto.profitPending, true);
   });
 
-  it('extractReturnsId checks multiple keys', () => {
-    assert.equal(extractReturnsId({ returnsId: 'R1' }), 'R1');
-    assert.equal(extractReturnsId({ after_sale_id: 'R2' }), 'R2');
+  it('mergeCardDto computes profit when sf complete', () => {
+    const dto = mergeCardDto({
+      hints: { packageId: 'P1' },
+      package: { paidAmount: 1000, refundApplyAmount: 900 },
+      sf: mergeSfWaybillResults([
+        { waybill: 'SF1', sfFee: 13, errorCode: null },
+      ]),
+    });
+    assert.equal(dto.profit, 87);
+    assert.equal(dto.sfFeeComplete, true);
   });
 });

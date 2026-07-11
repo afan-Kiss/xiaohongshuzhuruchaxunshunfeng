@@ -1,5 +1,25 @@
-const VERSION = '3.0.3';
+const VERSION = '3.0.4';
 const SERVICE = 'qf-sf-data-core';
+
+const VERIFICATION_TTL_MS = 10_000;
+
+function enrichPageRecord(page, expectedVersion) {
+  const now = Date.now();
+  const lastVerifiedAt = Number(page.lastVerifiedAt || 0);
+  const verificationAgeMs = lastVerifiedAt > 0 ? now - lastVerifiedAt : null;
+  const verificationFresh = Boolean(
+    page.verified
+    && (page.actualVersion || page.version) === expectedVersion
+    && lastVerifiedAt > 0
+    && verificationAgeMs <= VERIFICATION_TTL_MS,
+  );
+  return {
+    ...page,
+    lastVerifiedAt: lastVerifiedAt || null,
+    verificationAgeMs,
+    verificationFresh,
+  };
+}
 
 function createRuntimeState(options = {}) {
   const startedAt = Date.now();
@@ -38,12 +58,14 @@ function createRuntimeState(options = {}) {
     const expected = devtools.expectedVersion || VERSION;
     const pages = Array.isArray(devtools.pages) ? devtools.pages : [];
     if (pages.length > 0) {
-      const verifiedPages = pages.filter((p) => p.verified);
+      const enriched = pages.map((p) => enrichPageRecord(p, expected));
+      devtools.pages = enriched;
+      const verifiedPages = enriched.filter((p) => p.verificationFresh);
       devtools.injectedCount = verifiedPages.length;
       devtools.versions = verifiedPages.map((p) => p.actualVersion || p.version || '');
       flags.pageInjectionReady = devtools.pageCount > 0
         && verifiedPages.length >= devtools.pageCount
-        && pages.every((p) => p.verified && (p.actualVersion || p.version) === expected);
+        && enriched.every((p) => p.verificationFresh);
     } else {
       const versions = devtools.versions || [];
       flags.pageInjectionReady = devtools.pageCount === 0 ? true : (

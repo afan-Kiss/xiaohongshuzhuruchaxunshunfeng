@@ -4,6 +4,19 @@
 function runWithAbortTimeout(fn, ms, label, parentSignal) {
   const ctrl = new AbortController();
   const { signal } = ctrl;
+  let timer = null;
+  let onParentAbort = null;
+
+  function cleanup() {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (parentSignal && onParentAbort) {
+      parentSignal.removeEventListener('abort', onParentAbort);
+      onParentAbort = null;
+    }
+  }
 
   if (parentSignal) {
     if (parentSignal.aborted) {
@@ -11,10 +24,11 @@ function runWithAbortTimeout(fn, ms, label, parentSignal) {
       err.code = 'timeout';
       return Promise.reject(err);
     }
-    parentSignal.addEventListener('abort', () => ctrl.abort(), { once: true });
+    onParentAbort = () => ctrl.abort();
+    parentSignal.addEventListener('abort', onParentAbort, { once: true });
   }
 
-  const timer = setTimeout(() => ctrl.abort(), ms);
+  timer = setTimeout(() => ctrl.abort(), ms);
 
   return Promise.resolve()
     .then(() => fn(signal))
@@ -26,7 +40,7 @@ function runWithAbortTimeout(fn, ms, label, parentSignal) {
       }
       throw err;
     })
-    .finally(() => clearTimeout(timer));
+    .finally(cleanup);
 }
 
 module.exports = { runWithAbortTimeout };

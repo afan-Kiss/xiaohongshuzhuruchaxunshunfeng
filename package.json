@@ -1,6 +1,6 @@
 {
   "name": "xhs-qf-sf-fee",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "private": true,
   "description": "千帆客服台顺丰月结扣费 — 统一 Data Core Runtime",
   "scripts": {

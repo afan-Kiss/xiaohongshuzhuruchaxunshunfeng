@@ -197,7 +197,8 @@ function createDataCoreHttpServer(options = {}) {
           return;
         }
         try {
-          const result = await dataCore.fetchSfFee(waybill);
+          const force = ['1', 'true', 'yes'].includes(String(u.searchParams.get('force') || '').toLowerCase());
+          const result = await dataCore.fetchSfFee(waybill, force);
           sendJson(req, res, 200, { ok: true, ...result.data, state: result.state, source: result.source });
         } catch (err) {
           sendJson(req, res, 502, { ok: false, error: err.message, errorCode: err.code });

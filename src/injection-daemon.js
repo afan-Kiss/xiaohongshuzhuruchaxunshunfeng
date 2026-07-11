@@ -36,6 +36,9 @@ function logInjectError(page, err) {
   log(`注入失败 [${title}] ${url} ${err?.code || ''} ${err?.message || err}${line}${col}`);
 }
 
+const VERIFICATION_PROBE_MS = 5000;
+const VERIFICATION_TTL_MS = 10000;
+
 function loadInjectConfig() {
   let fileCfg = {};
   if (fs.existsSync(CONFIG_PATH)) {
@@ -51,7 +54,7 @@ function loadInjectConfig() {
   return {
     devtoolsHost: host,
     devtoolsPort: port,
-    pollIntervalMs: Number(fileCfg.pollIntervalMs) || 2500,
+    pollIntervalMs: Number(fileCfg.pollIntervalMs) || 5000,
     packageProxyPort: Number(fileCfg.packageProxyPort || process.env.QF_PACKAGE_PROXY_PORT || 4725),
     sf: fileCfg.sf || {},
     devtoolsSource: fromBot?.source || '',
@@ -144,16 +147,30 @@ async function injectToPage(page, source, prev, panelVersion) {
 }
 
 function buildDevtoolsStatus(pages, injectedMap, panelVersion) {
+  const now = Date.now();
   const pageRecords = pages.map((page) => {
     const entry = injectedMap.get(page.webSocketDebuggerUrl);
-    if (entry) return { ...entry };
-    return {
+    const base = entry ? { ...entry } : {
       ...createEmptyProbe(panelVersion),
       title: page.title || '',
       url: page.url || '',
     };
+    const lastVerifiedAt = Number(base.lastVerifiedAt || 0);
+    const verificationAgeMs = lastVerifiedAt > 0 ? now - lastVerifiedAt : null;
+    const verificationFresh = Boolean(
+      base.verified
+      && base.actualVersion === panelVersion
+      && lastVerifiedAt > 0
+      && verificationAgeMs <= VERIFICATION_TTL_MS,
+    );
+    return {
+      ...base,
+      lastVerifiedAt: lastVerifiedAt || null,
+      verificationAgeMs,
+      verificationFresh,
+    };
   });
-  const verified = pageRecords.filter((p) => p.verified);
+  const verified = pageRecords.filter((p) => p.verificationFresh);
   const versions = verified.map((p) => p.actualVersion);
   return {
     connected: true,
@@ -191,10 +208,25 @@ async function startInjectionDaemon(options = {}) {
 
   const abortWait = (ms) =>
     new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, ms);
-      if (signal) {
-        const onAbort = () => {
+      let timer = null;
+      let onAbort = null;
+      const cleanup = () => {
+        if (timer) {
           clearTimeout(timer);
+          timer = null;
+        }
+        if (signal && onAbort) {
+          signal.removeEventListener('abort', onAbort);
+          onAbort = null;
+        }
+      };
+      timer = setTimeout(() => {
+        cleanup();
+        resolve();
+      }, ms);
+      if (signal) {
+        onAbort = () => {
+          cleanup();
           reject(new Error('aborted'));
         };
         if (signal.aborted) {
@@ -242,15 +274,15 @@ async function startInjectionDaemon(options = {}) {
         let needInject = !prev.verified || prev.actualVersion !== panelVersion;
 
         if (!needInject && prev.verified) {
-          const due = !prev.lastVerifiedAt || Date.now() - prev.lastVerifiedAt > 30000;
+          const due = !prev.lastVerifiedAt || Date.now() - prev.lastVerifiedAt > VERIFICATION_PROBE_MS;
           if (due) {
             const live = await probePageLive(page, panelVersion);
             prev.lastVerifiedAt = Date.now();
             if (!live.verified) {
               needInject = true;
-              injected.set(ws, { ...live, fails: (prev.fails || 0) + 1 });
+              injected.set(ws, { ...live, fails: (prev.fails || 0) + 1, lastVerifiedAt: Date.now() });
             } else {
-              injected.set(ws, { ...prev, ...live, fails: 0 });
+              injected.set(ws, { ...prev, ...live, fails: 0, lastVerifiedAt: Date.now() });
             }
           }
           if (!needInject) continue;

@@ -9,6 +9,8 @@ function buildRenderFingerprint(item, packageId) {
     item.paidAmount ?? '',
     item.refundApplyAmount ?? '',
     item.sfFee ?? '',
+    item.sfFeeComplete === false ? 'partial' : '',
+    item.sfSuccessCount ?? '',
     item.stale ? '1' : '0',
   ].join('|');
 }

@@ -186,6 +186,8 @@ function buildRenderFingerprint(item, packageId) {
     item.paidAmount ?? '',
     item.refundApplyAmount ?? '',
     item.sfFee ?? '',
+    item.sfFeeComplete === false ? 'partial' : '',
+    item.sfSuccessCount ?? '',
     item.stale ? '1' : '0',
   ].join('|');
 }
@@ -233,10 +235,14 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
 }
 // __QSF_CLIENT_BUNDLE_END__
 
-  const VERSION = '3.0.3';
+  const VERSION = '3.0.4';
   const STYLE_ID = 'qf-sf-fee-inline-style';
   const SCAN_DEBOUNCE_MS = 70;
-  const BATCH_TIMEOUT_MS = 3000;
+  const BATCH_TIMEOUT_MS = 20000;
+  const HEALTH_PROBE_TIMEOUT_MS = 1500;
+  const RETRY_DELAYS_MS = [2000, 5000, 15000];
+  const RETRYABLE_CODES = new Set(['timeout', 'core_offline', 'upstream_error', 'stale']);
+  const NO_RETRY_CODES = new Set(['unknown_shop', 'shop_identity_conflict', 'auth_error']);
   const SESSION_POLL_MS = 500;
   const RENDER_CACHE_MAX = 200;
 
@@ -247,6 +253,7 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
   });
 
   const renderCache = new Map();
+  const retryState = new Map();
   let sessionGeneration = 0;
   let activeSessionKey = '';
   let sessionObs = null;
@@ -346,12 +353,20 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
     }
   }
 
+  function clearRetries() {
+    for (const entry of retryState.values()) {
+      if (entry.timer) clearTimeout(entry.timer);
+    }
+    retryState.clear();
+  }
+
   function onSessionChanged(nextKey) {
     const key = String(nextKey || '').trim();
     if (!key || key === activeSessionKey) return;
     activeSessionKey = key;
     sessionGeneration += 1;
     batchCtrl.cancelBatch();
+    clearRetries();
     scanSched.clearTimer();
     document.querySelectorAll('.qsf-inline-fee-wrap').forEach((el) => el.remove());
     scanSched.scheduleScan(true);
@@ -490,7 +505,7 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
       not_found: '上游查不到',
       auth_error: 'Cookie 已失效',
       config_error: '顺丰月结卡未配置',
-      timeout: '查询超时，稍后自动重试',
+      timeout: '查询超时，正在重试…',
       core_offline: '数据核心未连接',
       unhealthy: '数据核心异常',
       upstream_error: '上游接口异常',
@@ -502,13 +517,28 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
     return '—';
   }
 
+  function formatSfFee(item) {
+    if (item?.sfFee != null) {
+      const total = Number(item.sfFee).toFixed(2);
+      if (item.state === 'partial' || item.sfFeeComplete === false) {
+        const ok = item.sfSuccessCount ?? 0;
+        const all = item.sfWaybillCount ?? ok;
+        const fail = item.sfFailedCount ?? Math.max(0, all - ok);
+        if (fail > 0) return `${total}元（${ok}/${all}，另${fail}单查询失败）`;
+      }
+      return `${total}元`;
+    }
+    return null;
+  }
+
   function buildBlocks(item, snap) {
     const returnsId = snap?.returnsId || item?.returnsId || '';
     const showRefund = Boolean(returnsId || item?.refundApplyAmount != null);
     const blocks = [];
 
     let feeText = '…';
-    if (item?.sfFee != null) feeText = fmtMoney(item.sfFee);
+    const formatted = formatSfFee(item);
+    if (formatted) feeText = formatted;
     else if (item?.errorCode === 'not_applicable') feeText = '非顺丰';
     else if (!(snap?.expressNos || []).some(isSfNo) && !item?.expressNos?.some(isSfNo)) feeText = '无物流单号';
     else if (item) feeText = stateText(item, 'sf');
@@ -522,8 +552,10 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
       blocks.push({ label: '用户申请退款金额：', text: refundText, kind: refundText === '…' ? 'muted' : 'refund' });
     }
 
-    if (item?.profit != null && item.refundApplyAmount != null && item.sfFee != null) {
+    if (item?.profit != null && item.refundApplyAmount != null && item.sfFee != null && item.sfFeeComplete !== false) {
       blocks.push({ label: '', text: `赚到${fmtMoney(item.profit)}`, kind: 'profit' });
+    } else if (item?.profitPending) {
+      blocks.push({ label: '', text: '利润待补全运费', kind: 'muted' });
     }
 
     return blocks;
@@ -554,7 +586,7 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
 
   async function probeCore() {
     try {
-      const res = await fetch(`${coreBase()}/health`, { signal: AbortSignal.timeout(1500) });
+      const res = await fetch(`${coreBase()}/health`, { signal: AbortSignal.timeout(HEALTH_PROBE_TIMEOUT_MS) });
       if (!res.ok) return false;
       const body = await res.json();
       coreOnline = Boolean(body?.ok && body?.service === 'qf-sf-data-core' && body?.features?.batchCards);
@@ -592,6 +624,56 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
       }
       return parseBatchResponse(res, body);
     }, gen, isSessionStale);
+  }
+
+  function scheduleRetry(packageId, gen, attempt) {
+    const pid = String(packageId || '').trim();
+    if (!pid || NO_RETRY_CODES.has(retryState.get(pid)?.lastCode)) return;
+    const prev = retryState.get(pid);
+    if (prev?.timer) clearTimeout(prev.timer);
+    if (attempt >= RETRY_DELAYS_MS.length) return;
+    const delay = RETRY_DELAYS_MS[attempt];
+    const timer = setTimeout(() => {
+      if (isSessionStale(gen)) return;
+      const entry = retryState.get(pid);
+      if (!entry || entry.gen !== gen) return;
+      scanSched.scheduleScan(true);
+    }, delay);
+    retryState.set(pid, { gen, attempt: attempt + 1, timer, lastCode: prev?.lastCode || '' });
+  }
+
+  function maybeScheduleRetries(snaps, result, gen) {
+    if (!result || result.ok) {
+      for (const snap of snaps) retryState.delete(snap.packageId);
+      return;
+    }
+    const code = result.errorCode || 'upstream_error';
+    if (!RETRYABLE_CODES.has(code) || NO_RETRY_CODES.has(code)) return;
+    const seen = new Set();
+    for (const snap of snaps) {
+      if (!snap.packageId || seen.has(snap.packageId)) continue;
+      seen.add(snap.packageId);
+      const prev = retryState.get(snap.packageId) || { attempt: 0 };
+      retryState.set(snap.packageId, { ...prev, lastCode: code, gen });
+      scheduleRetry(snap.packageId, gen, prev.attempt || 0);
+    }
+  }
+
+  function maybeScheduleItemRetries(snaps, result, gen) {
+    if (!result?.ok) return;
+    for (const snap of snaps) {
+      const item = result.items?.[snap.packageId];
+      if (!item) continue;
+      const code = item.errorCode || item.state || '';
+      if (code === 'fresh' || code === 'partial' || code === 'not_applicable') {
+        retryState.delete(snap.packageId);
+        continue;
+      }
+      if (!RETRYABLE_CODES.has(code)) continue;
+      const prev = retryState.get(snap.packageId) || { attempt: 0 };
+      retryState.set(snap.packageId, { ...prev, lastCode: code, gen });
+      scheduleRetry(snap.packageId, gen, prev.attempt || 0);
+    }
   }
 
   async function runScan() {
@@ -633,8 +715,11 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
       for (const snap of snaps) {
         paintCard(snap, { errorCode: code, error: result.error || code }, false);
       }
+      maybeScheduleRetries(snaps, result, gen);
       return;
     }
+
+    maybeScheduleItemRetries(snaps, result, gen);
 
     for (const snap of snaps) {
       const item = result.items?.[snap.packageId] || result.errors?.[snap.packageId];
@@ -674,6 +759,7 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
       }),
       destroy: () => {
         batchCtrl.cancelBatch();
+        clearRetries();
         scanSched.clearTimer();
         if (orderObs) orderObs.disconnect();
         if (sessionObs) sessionObs.disconnect();

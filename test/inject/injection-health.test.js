@@ -16,6 +16,7 @@ describe('injection health consistency', () => {
         version: VERSION,
         mode: 'inline',
         hasInline: true,
+        lastVerifiedAt: Date.now(),
         title: 'A',
         url: 'http://a',
       }],
