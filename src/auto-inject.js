@@ -21,17 +21,42 @@ function log(msg) {
 }
 
 function acquireSingleInstance() {
+  const force = process.env.SF_FEE_FORCE_RESTART === '1';
   if (fs.existsSync(LOCK_PATH)) {
     try {
       const oldPid = Number(fs.readFileSync(LOCK_PATH, 'utf8').trim());
       if (oldPid > 0) {
         try {
           process.kill(oldPid, 0);
-          process.exit(0);
+          if (force) {
+            log(`强制重启：结束旧守护进程 PID ${oldPid}`);
+            try {
+              process.kill(oldPid, 'SIGTERM');
+            } catch {
+              /* ignore */
+            }
+            const deadline = Date.now() + 2500;
+            while (Date.now() < deadline) {
+              try {
+                process.kill(oldPid, 0);
+              } catch {
+                break;
+              }
+              const waitUntil = Date.now() + 120;
+              while (Date.now() < waitUntil) { /* spin */ }
+            }
+          } else {
+            process.exit(0);
+          }
         } catch {
           /* stale lock */
         }
       }
+    } catch {
+      /* ignore */
+    }
+    try {
+      fs.unlinkSync(LOCK_PATH);
     } catch {
       /* ignore */
     }
