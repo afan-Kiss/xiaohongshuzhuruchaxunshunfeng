@@ -1,4 +1,8 @@
+config.json
+node_modules/
+.inject-daemon.lock
 data/runtime/
-data/runtime/sf-data-core-cache.json
 logs/
 *.log
+*.tmp
+*.bak

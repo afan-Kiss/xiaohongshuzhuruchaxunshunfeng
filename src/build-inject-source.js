@@ -3,7 +3,7 @@ const STORAGE_KEY = 'qf_sf_fee_config_v1';
 
 function buildPresetBootstrap(sfCfg, extra = {}) {
   const proxyPort = Number(extra.packageProxyPort || sfCfg.packageProxyPort || 4725);
-  const dataCoreMode = String(extra.dataCoreMode || 'prefer-core');
+  const dataCoreMode = String(extra.dataCoreMode || 'core-only');
   return `(function(){
   try {
     window.__qfPackageProxyPort = ${proxyPort};

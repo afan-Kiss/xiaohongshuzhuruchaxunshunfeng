@@ -81,6 +81,28 @@ function readPanelVersion() {
   return panelJs.match(/const VERSION = '([^']+)'/)?.[1] || '';
 }
 
+async function probePageVersion(ws, expectedVersion) {
+  let client;
+  try {
+    client = await connectCdp(ws, 5000);
+    const check = await client.Runtime.evaluate({
+      expression: VERSION_PROBE_EXPR,
+      returnByValue: true,
+    });
+    const info = check.result?.value || {};
+    return {
+      version: info.version || '',
+      ok: info.version === expectedVersion && info.hasInline && !info.hasLegacyPanel,
+    };
+  } catch {
+    return { version: '', ok: false };
+  } finally {
+    if (client) {
+      try { await client.close(); } catch { /* ignore */ }
+    }
+  }
+}
+
 async function startInjectionDaemon(options = {}) {
   const config = options.config || loadInjectConfig();
   const signal = options.signal;
@@ -157,8 +179,16 @@ async function startInjectionDaemon(options = {}) {
         let needInject = !prev.ok || prev.injectedVersion !== panelVersion;
 
         if (!needInject && prev.ok) {
-          versions.push(panelVersion);
-          continue;
+          const due = !prev.versionCheckedAt || Date.now() - prev.versionCheckedAt > 30000;
+          if (due) {
+            const probe = await probePageVersion(ws, panelVersion);
+            prev.versionCheckedAt = Date.now();
+            if (!probe.ok) needInject = true;
+            else versions.push(probe.version || panelVersion);
+          } else {
+            versions.push(panelVersion);
+          }
+          if (!needInject) continue;
         }
 
         needFastPoll = true;

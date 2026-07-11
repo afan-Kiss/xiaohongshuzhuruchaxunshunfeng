@@ -9,10 +9,11 @@ const {
 } = require('../../src/core/normalizers');
 
 describe('normalizers', () => {
-  it('parseMoneyYuan handles yuan, fen, symbols', () => {
+  it('parseMoneyYuan handles yuan symbols without magnitude guess', () => {
     assert.equal(parseMoneyYuan(12.5), 12.5);
     assert.equal(parseMoneyYuan('￥1,680'), 1680);
-    assert.equal(parseMoneyYuan(168000), 1680);
+    assert.equal(parseMoneyYuan(168000), 168000);
+    assert.equal(parseMoneyYuan(16800), 16800);
     assert.equal(parseMoneyYuan(''), null);
     assert.equal(parseMoneyYuan(null), null);
   });

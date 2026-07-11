@@ -268,7 +268,7 @@ function createDataCoreHttpServer(options = {}) {
           coreReady: true,
           packageApiReady: true,
           afterSaleReady: true,
-          sfConfigReady: dataCore.sfConfigReady(),
+          sfReady: dataCore.sfConfigReady(),
         });
         console.log(`[qf-sf-data-core] http://${host}:${port} v${VERSION} shops=${Object.keys(manual.map || {}).length}`);
         resolve({ server, port, host });

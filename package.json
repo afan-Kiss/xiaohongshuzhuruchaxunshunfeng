@@ -1,6 +1,6 @@
 {
   "name": "xhs-qf-sf-fee",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "private": true,
   "description": "千帆客服台顺丰月结扣费 — 统一 Data Core Runtime",
   "scripts": {
@@ -12,6 +12,8 @@
     "test": "node --test test/**/*.test.js",
     "test:core": "node --test test/core/**/*.test.js",
     "smoke": "node scripts/smoke-health.js",
+    "stress": "node scripts/stress-data-core.js",
+    "soak": "node scripts/soak-data-core.js",
     "reinject": "node scripts/force-reinject.js",
     "install:autostart": "node scripts/install-autostart.js",
     "start:fee-web": "node shunfengchafeiyong/server.js"

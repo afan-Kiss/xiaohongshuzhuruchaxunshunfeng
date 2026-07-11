@@ -8,19 +8,11 @@ const fs = require('fs');
 
 const path = require('path');
 
-
-
-const SHOP_ROWS = [
-
-  { shopKey: 'xyxiangyu', shopName: 'XY祥钰珠宝', matchNames: ['XY祥钰珠宝', 'XY祥钰', 'xy祥钰'] },
-
-  { shopKey: 'xiangyu', shopName: '祥钰珠宝', matchNames: ['祥钰珠宝'] },
-
-  { shopKey: 'hetianyayu', shopName: '和田雅玉', matchNames: ['和田雅玉'] },
-
-  { shopKey: 'shiyuju', shopName: '拾玉居和田玉', matchNames: ['拾玉居和田玉', '拾玉居'] },
-
-];
+const {
+  SHOP_ROWS,
+  resolveShopFromTitle,
+  resolveShopTitleFromKey: titleFromShopKey,
+} = require('./core/shop-identity');
 
 
 
@@ -31,51 +23,14 @@ const COOKIE_TTL_MS = 5 * 60 * 1000;
 
 
 function resolveShopKeyFromTitle(pageTitle) {
-
-  const title = String(pageTitle || '').replace(/-工作台\s*$/, '').trim();
-
-  if (!title) return '';
-
-  let bestKey = '';
-
-  let bestLen = 0;
-
-  for (const row of SHOP_ROWS) {
-
-    for (const name of row.matchNames) {
-
-      const n = String(name || '').trim();
-
-      if (!n) continue;
-
-      if (title !== n && !title.includes(n)) continue;
-
-      if (n.length > bestLen) {
-
-        bestLen = n.length;
-
-        bestKey = row.shopKey;
-
-      }
-
-    }
-
-  }
-
-  return bestKey;
-
+  const result = resolveShopFromTitle(pageTitle);
+  return result.ok ? result.shopKey : '';
 }
 
 
 
 function resolveShopTitleFromKey(shopKey) {
-
-  const key = String(shopKey || '').trim();
-
-  const row = SHOP_ROWS.find((r) => r.shopKey === key);
-
-  return row?.shopName || key;
-
+  return titleFromShopKey(shopKey);
 }
 
 

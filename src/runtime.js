@@ -39,8 +39,9 @@ async function main() {
     httpStarted = await coreHttp.start();
   } catch (err) {
     if (err.code === 'ALREADY_RUNNING') {
-      log(`同版本 Data Core 已在运行 (v${VERSION})`);
-      process.exit(0);
+      log(`同版本 Data Core 已在运行 (v${VERSION}) instance=${err.health?.instanceId || '?'}`);
+      console.log(JSON.stringify({ alreadyRunning: true, health: err.health || null }));
+      process.exit(2);
     }
     console.error(`[qf-runtime] Data Core 启动失败: ${err.message || err}`);
     process.exit(1);

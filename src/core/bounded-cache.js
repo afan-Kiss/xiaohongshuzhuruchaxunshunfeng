@@ -78,26 +78,63 @@ function createBoundedCache(options = {}) {
   function dump() {
     const out = {};
     for (const [k, e] of map) {
-      out[k] = { value: e.value, updatedAt: e.updatedAt, source: e.source };
+      out[k] = {
+        value: e.value,
+        updatedAt: e.updatedAt,
+        freshUntil: e.freshUntil,
+        staleUntil: e.staleUntil,
+        source: e.source,
+        error: e.error || null,
+        errorCode: e.errorCode || null,
+      };
     }
     return out;
   }
 
-  function load(entries = {}) {
+  function load(entries = {}, profile = {}) {
     map.clear();
-    for (const [k, raw] of Object.entries(entries)) {
+    const t = now();
+    const pFresh = Number(profile.freshMs || freshMs);
+    const pStale = Number(profile.staleMs || staleMs);
+    const pError = Number(profile.errorMs || errorMs);
+
+    const rows = [];
+    for (const [k, raw] of Object.entries(entries || {})) {
       if (!raw || typeof raw !== 'object') continue;
-      const entry = {
-        value: raw.value,
-        updatedAt: Number(raw.updatedAt) || now(),
-        freshUntil: Number(raw.freshUntil) || 0,
-        staleUntil: Number(raw.staleUntil) || 0,
-        source: raw.source || 'persisted',
-        error: raw.error || null,
-        errorCode: raw.errorCode || null,
-        refreshing: false,
-      };
-      if (entry.staleUntil > now()) map.set(k, entry);
+      const updatedAt = Number(raw.updatedAt);
+      if (!Number.isFinite(updatedAt) || updatedAt <= 0) continue;
+
+      let freshUntil = Number(raw.freshUntil);
+      let staleUntil = Number(raw.staleUntil);
+      const isError = Boolean(raw.error || raw.errorCode);
+
+      if (!Number.isFinite(freshUntil) || !Number.isFinite(staleUntil)) {
+        const errMs = isError ? pError : pFresh;
+        const stMs = isError ? pError : pStale;
+        freshUntil = updatedAt + errMs;
+        staleUntil = updatedAt + stMs;
+      }
+
+      if (staleUntil <= t) continue;
+
+      rows.push({
+        key: k,
+        entry: {
+          value: raw.value,
+          updatedAt,
+          freshUntil,
+          staleUntil,
+          source: raw.source || 'persisted',
+          error: raw.error || null,
+          errorCode: raw.errorCode || null,
+          refreshing: false,
+        },
+      });
+    }
+
+    rows.sort((a, b) => b.entry.updatedAt - a.entry.updatedAt);
+    for (const row of rows.slice(0, maxSize)) {
+      map.set(row.key, row.entry);
     }
   }
 
@@ -111,6 +148,7 @@ function createBoundedCache(options = {}) {
     dump,
     load,
     size: () => map.size,
+    profile: () => ({ maxSize, freshMs, staleMs, errorMs }),
   };
 }
 

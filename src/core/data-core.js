@@ -15,8 +15,8 @@ const { fetchPackageDetailByCookie, fetchReturnsV3ByCookie } = require('../qianf
 const {
   getShopCookie,
   invalidateShopCookie,
-  resolveShopKeyFromTitle,
 } = require('../qianfan-shop-cookies');
+const { validateShopIdentity } = require('./shop-identity');
 const { querySfWaybillFee } = require('../sf-waybill-client');
 
 const TIMEOUT = {
@@ -69,6 +69,7 @@ function withTimeout(promise, ms, label) {
 function createDataCore(options = {}) {
   const metrics = createMetrics();
   const sf = options.sf || {};
+  const testHooks = options.testHooks || {};
   const persistPath = options.persistPath
     || path.join(options.root || process.cwd(), 'data', 'runtime', 'sf-data-core-cache.json');
   const persistence = createPersistence(persistPath);
@@ -87,9 +88,17 @@ function createDataCore(options = {}) {
   const sfLimiter = createConcurrencyLimiter(6);
 
   const persisted = persistence.load();
-  if (persisted.package) packageCache.load(persisted.package);
-  if (persisted.afterSale) afterSaleOpenCache.load(persisted.afterSale);
-  if (persisted.sf) sfOkCache.load(persisted.sf);
+  const schemaVersion = Number(persisted.schemaVersion) || 1;
+  if (persisted.package) packageCache.load(persisted.package, CACHE_PROFILE.package);
+  if (persisted.afterSaleOpen) afterSaleOpenCache.load(persisted.afterSaleOpen, CACHE_PROFILE.afterSaleOpen);
+  else if (schemaVersion < 2 && persisted.afterSale) {
+    afterSaleOpenCache.load(persisted.afterSale, CACHE_PROFILE.afterSaleOpen);
+  }
+  if (persisted.afterSaleClosed) afterSaleClosedCache.load(persisted.afterSaleClosed, CACHE_PROFILE.afterSaleClosed);
+  if (persisted.sfOk) sfOkCache.load(persisted.sfOk, CACHE_PROFILE.sfOk);
+  else if (schemaVersion < 2 && persisted.sf) {
+    sfOkCache.load(persisted.sf, CACHE_PROFILE.sfOk);
+  }
 
   let persistTimer = null;
   function schedulePersist() {
@@ -97,15 +106,18 @@ function createDataCore(options = {}) {
     persistTimer = setTimeout(() => {
       persistTimer = null;
       persistence.scheduleSave({
-        package: packageCache.dump(),
-        afterSale: afterSaleOpenCache.dump(),
-        sf: sfOkCache.dump(),
+        schemaVersion: 2,
         savedAt: Date.now(),
+        package: packageCache.dump(),
+        afterSaleOpen: afterSaleOpenCache.dump(),
+        afterSaleClosed: afterSaleClosedCache.dump(),
+        sfOk: sfOkCache.dump(),
       });
     }, 100);
   }
 
   async function getCookie(shopKey) {
+    if (testHooks.getCookie) return testHooks.getCookie(shopKey);
     return withTimeout(getShopCookie(shopKey), TIMEOUT.cookie, 'cookie');
   }
 
@@ -166,6 +178,9 @@ function createDataCore(options = {}) {
     return sfPackage.run(key, () =>
       qianfanLimiter.schedule(shopKey, async () => {
         const loader = async () => {
+          if (testHooks.fetchPackage) {
+            return testHooks.fetchPackage(shopKey, packageId);
+          }
           const cookieRes = await getCookie(shopKey);
           if (!cookieRes.ok) {
             const err = new Error(cookieRes.error || 'cookie_unavailable');
@@ -207,6 +222,9 @@ function createDataCore(options = {}) {
     return sfAfterSale.run(key, () =>
       qianfanLimiter.schedule(shopKey, async () => {
         const loader = async () => {
+          if (testHooks.fetchAfterSale) {
+            return testHooks.fetchAfterSale(shopKey, returnsId, packageId);
+          }
           const cookieRes = await getCookie(shopKey);
           if (!cookieRes.ok) {
             const err = new Error(cookieRes.error || 'cookie_unavailable');
@@ -330,7 +348,9 @@ function createDataCore(options = {}) {
         }
 
         try {
-          const raw = await withTimeout(querySfWaybillFee(no, sf), TIMEOUT.sf, 'sf_fee');
+          const raw = testHooks.fetchSfFee
+            ? await testHooks.fetchSfFee(no, sf)
+            : await withTimeout(querySfWaybillFee(no, sf), TIMEOUT.sf, 'sf_fee');
           const normalized = normalizeSfFee(raw);
           const target = normalized.errorCode && normalized.errorCode !== 'not_found'
             ? sfErrCache
@@ -437,13 +457,22 @@ function createDataCore(options = {}) {
 
   async function batchCards(body) {
     metrics.inc('batchRequestCount');
-    let shopKey = String(body.shopKey || '').trim();
-    if (!shopKey) {
-      shopKey = resolveShopKeyFromTitle(body.shopTitle || body.title || '');
+    const identity = validateShopIdentity({
+      shopKey: body.shopKey,
+      shopTitle: body.shopTitle || body.title,
+      shopId: body.shopId,
+    });
+    if (!identity.ok) {
+      return {
+        ok: false,
+        error: identity.error,
+        errorCode: identity.errorCode,
+        status: identity.errorCode === 'shop_identity_conflict' ? 409 : 400,
+      };
     }
+    const shopKey = identity.shopKey;
     const cards = Array.isArray(body.cards) ? body.cards : [];
     const force = Boolean(body.force);
-    if (!shopKey) return { ok: false, error: 'missing_shopKey', status: 400 };
     if (!cards.length) return { ok: false, error: 'missing_cards', status: 400 };
     if (cards.length > 50) return { ok: false, error: 'too_many_cards', status: 400 };
 
@@ -514,6 +543,20 @@ function createDataCore(options = {}) {
       if (!partnerID || !checkWord) return false;
       if (!sf.sandbox && !String(sf.monthlyCard || '').trim()) return false;
       return true;
+    },
+    getLimiters() {
+      return { qianfan: qianfanLimiter, sf: sfLimiter };
+    },
+    getSingleflights() {
+      return { package: sfPackage, afterSale: sfAfterSale, sf: sfFeeFlight };
+    },
+    getCaches() {
+      return {
+        package: packageCache,
+        afterSaleOpen: afterSaleOpenCache,
+        afterSaleClosed: afterSaleClosedCache,
+        sfOk: sfOkCache,
+      };
     },
   };
 }

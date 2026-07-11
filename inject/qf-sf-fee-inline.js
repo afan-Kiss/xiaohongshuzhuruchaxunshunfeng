@@ -2,12 +2,12 @@
  * 千帆客服台 · 顺丰月结扣费内嵌 v3（轻量 batch 客户端）
  */
 (function qfSfFeeInlineV3() {
-  const VERSION = '3.0.0';
+  const VERSION = '3.0.1';
   const STYLE_ID = 'qf-sf-fee-inline-style';
   const SCAN_DEBOUNCE_MS = 70;
   const BATCH_TIMEOUT_MS = 3000;
+  const SESSION_POLL_MS = 500;
   const RENDER_CACHE_MAX = 200;
-  const CORE_MODE = String(window.__qfDataCoreMode || 'prefer-core');
 
   const renderCache = new Map();
   let scanTimer = null;
@@ -37,6 +37,20 @@
 
   function shopTitle() {
     return String(document.title || '').replace(/-工作台\s*$/, '').trim();
+  }
+
+  function resolveLocalShopKey() {
+    const raw = shopTitle().replace(/[-—–]\s*工作台\s*$/i, '').replace(/千帆|客服台?/g, '').replace(/\s+/g, '');
+    const rows = [
+      ['XY祥钰珠宝', 'xyxiangyu'], ['XY祥钰', 'xyxiangyu'],
+      ['祥钰珠宝', 'xiangyu'],
+      ['和田雅玉', 'hetianyayu'],
+      ['拾玉居和田玉', 'shiyuju'], ['拾玉居', 'shiyuju'],
+    ].sort((a, b) => b[0].length - a[0].length);
+    for (const [name, key] of rows) {
+      if (raw === name) return key;
+    }
+    return '';
   }
 
   function uidFromAppCid(appCid) {
@@ -122,7 +136,7 @@
   function watchSession() {
     syncSession();
     if (sessionPollTimer) clearInterval(sessionPollTimer);
-    sessionPollTimer = setInterval(syncSession, 250);
+    sessionPollTimer = setInterval(syncSession, SESSION_POLL_MS);
     if (sessionObs) sessionObs.disconnect();
     const root = document.querySelector('.chat-list, .farmer-chat__left, [class*="chat-list"]') || document.body;
     sessionObs = new MutationObserver(() => syncSession());
@@ -159,29 +173,37 @@
     return /^SF\d{10,}$/i.test(String(no || '').trim());
   }
 
+  function extractCardSnapshot(card) {
+    const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+    const innerText = card.innerText || '';
+    const returnsId = (() => {
+      const m = innerText.match(/\b(R\d{10,})\b/);
+      return m ? m[1] : '';
+    })();
+    const expressNos = (() => {
+      const nos = [];
+      const logistics = card.querySelector('.delivery-row-logistics, .logistics-box');
+      const logisticsText = (logistics?.innerText || '').replace(/\s+/g, ' ');
+      if (logisticsText) {
+        const m = logisticsText.match(/\b(SF\d{10,}|[A-Z]{2,4}\d{8,})\b/i);
+        if (m) nos.push(m[1].toUpperCase());
+      }
+      const matches = innerText.replace(/\s+/g, ' ').match(/\b(SF\d{10,}|[A-Z]{2,4}\d{8,})\b/gi) || [];
+      for (const c of matches) {
+        const n = c.toUpperCase();
+        if (n && n !== packageId.toUpperCase() && !nos.includes(n)) nos.push(n);
+      }
+      return nos;
+    })();
+    return { card, packageId, returnsId, expressNos, hasRefund: Boolean(returnsId) };
+  }
+
   function extractReturnsId(card) {
-    if (!card) return '';
-    const text = card.innerText || '';
-    const m = text.match(/\b(R\d{10,})\b/);
-    return m ? m[1] : '';
+    return card?.__qsfSnap?.returnsId || '';
   }
 
   function extractExpressNos(card) {
-    const nos = [];
-    const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
-    const logistics = card.querySelector('.delivery-row-logistics, .logistics-box');
-    const logisticsText = (logistics?.innerText || '').replace(/\s+/g, ' ');
-    if (logisticsText) {
-      const m = logisticsText.match(/\b(SF\d{10,}|[A-Z]{2,4}\d{8,})\b/i);
-      if (m) nos.push(m[1].toUpperCase());
-    }
-    const cardText = (card.innerText || '').replace(/\s+/g, ' ');
-    const matches = cardText.match(/\b(SF\d{10,}|[A-Z]{2,4}\d{8,})\b/gi) || [];
-    for (const c of matches) {
-      const n = c.toUpperCase();
-      if (n && n !== packageId.toUpperCase() && !nos.includes(n)) nos.push(n);
-    }
-    return nos;
+    return card?.__qsfSnap?.expressNos || [];
   }
 
   function findOrderCards() {
@@ -244,22 +266,23 @@
       timeout: '查询超时，稍后自动重试',
       core_offline: '数据核心未连接',
       upstream_error: '上游接口异常',
-      unknown: '无法识别',
+      unknown_shop: '店铺身份无法确认',
+      shop_identity_conflict: '店铺身份无法确认',
     };
     if (map[code]) return map[code];
     if (item?.error) return String(item.error);
     return '—';
   }
 
-  function buildBlocks(item, card) {
-    const returnsId = extractReturnsId(card);
-    const showRefund = Boolean(returnsId || item?.returnsId || item?.refundApplyAmount != null);
+  function buildBlocks(item, snap) {
+    const returnsId = snap?.returnsId || item?.returnsId || '';
+    const showRefund = Boolean(returnsId || item?.refundApplyAmount != null);
     const blocks = [];
 
     let feeText = '…';
     if (item?.sfFee != null) feeText = fmtMoney(item.sfFee);
     else if (item?.errorCode === 'not_applicable') feeText = '非顺丰';
-    else if (!extractExpressNos(card).some(isSfNo) && !item?.expressNos?.some(isSfNo)) feeText = '无物流单号';
+    else if (!(snap?.expressNos || []).some(isSfNo) && !item?.expressNos?.some(isSfNo)) feeText = '无物流单号';
     else if (item) feeText = stateText(item, 'sf');
 
     blocks.push({
@@ -312,8 +335,8 @@
     wrap.innerHTML = `<div class="${rowCls}">${segs}</div>`;
   }
 
-  function paintCard(card, item, stale) {
-    const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
+  function paintCard(snap, item, stale) {
+    const { card, packageId, hasRefund } = snap;
     if (!packageId) return;
     const wrap = ensureFeeWrap(card);
     const cached = renderCache.get(packageId);
@@ -321,9 +344,9 @@
       renderCardInfo(wrap, cached.blocks, cached.stale);
       return;
     }
-    const blocks = item ? buildBlocks(item, card) : [
+    const blocks = item ? buildBlocks(item, snap) : [
       { label: '月结费用：', text: '…', kind: 'muted' },
-      ...(extractReturnsId(card) ? [{ label: '用户申请退款金额：', text: '…', kind: 'muted' }] : []),
+      ...(hasRefund ? [{ label: '用户申请退款金额：', text: '…', kind: 'muted' }] : []),
     ];
     renderCardInfo(wrap, blocks, stale);
     if (item) {
@@ -345,17 +368,22 @@
     }
   }
 
-  async function batchFetch(cards, gen) {
+  async function batchFetch(snaps, shopKey, gen) {
     const title = shopTitle();
-    if (!title || !cards.length) return null;
+    if (!title || !snaps.length) return null;
     cancelBatch();
     batchAbort = new AbortController();
     const timer = setTimeout(() => batchAbort.abort(), BATCH_TIMEOUT_MS);
+    const cards = snaps.map((s) => ({
+      packageId: s.packageId,
+      returnsId: s.returnsId,
+      expressNos: s.expressNos,
+    }));
     try {
       const res = await fetch(`${coreBase()}/v1/cards/batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shopTitle: title, cards }),
+        body: JSON.stringify({ shopKey, shopTitle: title, cards }),
         signal: batchAbort.signal,
       });
       if (isSessionStale(gen)) return null;
@@ -375,59 +403,56 @@
   async function runScan() {
     const gen = sessionGeneration;
     const cards = findOrderCards();
-    for (const card of cards) {
+    const snaps = cards.map((card) => {
+      const snap = extractCardSnapshot(card);
+      card.__qsfSnap = snap;
+      return snap;
+    });
+    for (const snap of snaps) {
       if (isSessionStale(gen)) return;
-      paintCard(card, null, false);
+      paintCard(snap, null, false);
     }
-    if (!cards.length) return;
+    if (!snaps.length) return;
 
     const payload = [];
     const seen = new Set();
-    for (const card of cards) {
-      const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
-      if (!packageId || seen.has(packageId)) continue;
-      seen.add(packageId);
-      payload.push({
-        packageId,
-        returnsId: extractReturnsId(card),
-        expressNos: extractExpressNos(card),
-      });
+    for (const snap of snaps) {
+      if (!snap.packageId || seen.has(snap.packageId)) continue;
+      seen.add(snap.packageId);
+      payload.push(snap);
     }
 
     const online = await probeCore();
     if (isSessionStale(gen)) return;
 
-    if (!online && CORE_MODE === 'legacy-only') {
-      paintCoreOffline(cards);
-      return;
-    }
     if (!online) {
-      paintCoreOffline(cards);
+      paintCoreOffline(snaps);
       return;
     }
 
-    const result = await batchFetch(payload, gen);
+    const shopKey = resolveLocalShopKey();
+    const result = await batchFetch(payload, shopKey, gen);
     if (isSessionStale(gen) || !result) return;
 
     if (!result.ok) {
-      for (const card of cards) {
-        paintCard(card, { errorCode: result.errorCode || 'upstream_error', error: result.error }, false);
+      const code = result.errorCode || 'upstream_error';
+      for (const snap of snaps) {
+        paintCard(snap, { errorCode: code, error: result.error || code }, false);
       }
       return;
     }
 
-    for (const card of cards) {
-      const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
-      const item = result.items?.[packageId] || result.errors?.[packageId];
+    for (const snap of snaps) {
+      const item = result.items?.[snap.packageId] || result.errors?.[snap.packageId];
       if (!item) continue;
       const stale = item.state === 'stale' || item.stale;
-      paintCard(card, item, stale);
+      paintCard(snap, item, stale);
     }
   }
 
-  function paintCoreOffline(cards) {
-    for (const card of cards) {
-      paintCard(card, { errorCode: 'core_offline', error: '数据核心未连接' }, false);
+  function paintCoreOffline(snaps) {
+    for (const snap of snaps) {
+      paintCard(snap, { errorCode: 'core_offline', error: '数据核心未连接' }, false);
     }
   }
 

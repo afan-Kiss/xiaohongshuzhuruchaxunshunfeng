@@ -1,4 +1,4 @@
-const VERSION = '3.0.0';
+const VERSION = '3.0.1';
 const SERVICE = 'qf-sf-data-core';
 
 function createRuntimeState(options = {}) {
@@ -16,7 +16,7 @@ function createRuntimeState(options = {}) {
     coreReady: false,
     packageApiReady: false,
     afterSaleReady: false,
-    sfConfigReady: false,
+    sfReady: false,
     devtoolsConnected: false,
     pageInjectionReady: false,
     webReady: false,
@@ -29,25 +29,45 @@ function createRuntimeState(options = {}) {
     const versions = devtools.versions || [];
     const allMatch = devtools.pageCount > 0
       && devtools.injectedCount >= devtools.pageCount
+      && versions.length >= devtools.pageCount
       && versions.every((v) => v === expected);
-    flags.pageInjectionReady = allMatch;
+    flags.pageInjectionReady = devtools.pageCount === 0 ? true : allMatch;
   }
 
   function setFlags(patch) {
     flags = { ...flags, ...patch };
+    if (patch.sfConfigReady != null && patch.sfReady == null) {
+      flags.sfReady = Boolean(patch.sfConfigReady);
+    }
   }
 
   function buildHealth(metrics = {}) {
     const uptimeMs = Date.now() - startedAt;
-    const ok = flags.coreReady
-      && flags.packageApiReady
-      && flags.afterSaleReady
-      && flags.sfConfigReady
-      && flags.devtoolsConnected
-      && (devtools.pageCount === 0 || flags.pageInjectionReady);
+    const degradedReasons = [];
+
+    const coreOk = flags.coreReady && flags.packageApiReady && flags.afterSaleReady;
+    if (!flags.sfReady) degradedReasons.push('sf_config_missing');
+    if (!flags.devtoolsConnected) degradedReasons.push('devtools_offline');
+    if (devtools.pageCount === 0) degradedReasons.push('no_qianfan_pages');
+    else if (!flags.pageInjectionReady) degradedReasons.push('injection_incomplete');
+    if (!flags.webReady) degradedReasons.push('web_unavailable');
+
+    let status = 'unhealthy';
+    let ok = false;
+    if (!coreOk) {
+      status = 'unhealthy';
+      ok = false;
+    } else if (degradedReasons.length > 0) {
+      status = 'degraded';
+      ok = true;
+    } else {
+      status = 'healthy';
+      ok = true;
+    }
 
     return {
       ok,
+      status,
       service: SERVICE,
       version: VERSION,
       instanceId,
@@ -56,13 +76,14 @@ function createRuntimeState(options = {}) {
       features: {
         packageDetail: flags.packageApiReady,
         afterSale: flags.afterSaleReady,
-        sfFee: flags.sfConfigReady,
+        sfFee: flags.sfReady,
         batchCards: flags.coreReady,
         singleflight: true,
         persistentCache: true,
         fonts: true,
       },
       checks: { ...flags },
+      degradedReasons,
       devtools: { ...devtools },
       metrics: metrics || {},
     };

@@ -1,24 +1,40 @@
 /**
  * Unified parsing for package detail, after-sale, and card DTO.
+ * Amounts: explicit yuan vs fen fields — never guess by magnitude.
  */
 
-function parseMoneyYuan(raw) {
+function roundYuan(n) {
+  return Math.round(Number(n) * 100) / 100;
+}
+
+function parseYuanAmount(raw) {
   if (raw == null || raw === '') return null;
   if (typeof raw === 'number') {
     if (!Number.isFinite(raw)) return null;
-    if (Number.isInteger(raw) && Math.abs(raw) >= 10000) return Math.round(raw) / 100;
-    return Math.round(raw * 100) / 100;
+    return roundYuan(raw);
   }
   const s = String(raw).trim().replace(/[￥¥,\s]/g, '');
   if (!s || s === '-' || s === '—') return null;
-  if (s.includes('.')) {
-    const n = Number(s);
-    return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
-  }
   const n = Number(s);
   if (!Number.isFinite(n)) return null;
-  return Math.round(n * 100) / 100;
+  return roundYuan(n);
 }
+
+function parseFenAmount(raw) {
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw)) return null;
+    return roundYuan(raw / 100);
+  }
+  const s = String(raw).trim().replace(/[￥¥,\s]/g, '');
+  if (!s || s === '-' || s === '—') return null;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  return roundYuan(n / 100);
+}
+
+/** @deprecated use parseYuanAmount */
+const parseMoneyYuan = parseYuanAmount;
 
 function firstNonEmpty(...vals) {
   for (const v of vals) {
@@ -41,42 +57,28 @@ function extractReturnsId(obj) {
   );
 }
 
-function parseReturnsV3Fen(raw) {
-  if (raw == null || raw === '') return null;
-  if (typeof raw === 'number') {
-    if (!Number.isFinite(raw)) return null;
-    if (Number.isInteger(raw)) return Math.round(raw) / 100;
-    return Math.round(raw * 100) / 100;
-  }
-  const s = String(raw).trim().replace(/[￥¥,\s]/g, '');
-  if (!s || s === '-' || s === '—') return null;
-  const n = Number(s);
-  if (!Number.isFinite(n)) return null;
-  return Math.round(n) / 100;
-}
-
 function pickRefundApplyFromReturnsV3(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  const direct = parseMoneyYuan(
+  const direct = parseYuanAmount(
     raw.applied_amount
       ?? raw.expected_refund_amount
-      ?? raw.refund_fee
       ?? raw.apply_amount
       ?? raw.applyAmount,
   );
   if (direct != null) return direct;
-  const sku = parseReturnsV3Fen(raw.applied_skus_amount_sum);
-  const ship = parseReturnsV3Fen(raw.applied_ship_fee_amount);
-  if (sku != null || ship != null) return Math.round(((sku || 0) + (ship || 0)) * 100) / 100;
+  const refundFee = parseYuanAmount(raw.refund_fee ?? raw.refundFee);
+  if (refundFee != null) return refundFee;
+  const sku = parseFenAmount(raw.applied_skus_amount_sum ?? raw.appliedSkusAmountSum);
+  const ship = parseFenAmount(raw.applied_ship_fee_amount ?? raw.appliedShipFeeAmount);
+  if (sku != null || ship != null) return roundYuan((sku || 0) + (ship || 0));
   return null;
 }
 
 function pickRefundActualFromReturnsV3(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  return parseMoneyYuan(
+  return parseYuanAmount(
     raw.refund_amount
       ?? raw.actual_refund_amount
-      ?? raw.refund_fee
       ?? raw.refunded_amount,
   );
 }
@@ -92,17 +94,17 @@ function normalizePackageDetail(data, hints = {}) {
     extractReturnsId(afterSale),
     extractReturnsId(raw.after_sales?.[0]),
   );
-  const paidAmount = parseMoneyYuan(
+  const paidAmount = parseYuanAmount(
     raw.paid_amount ?? raw.paidAmount ?? raw.pay_amount ?? raw.order_amount,
   );
-  const refundApplyAmount = parseMoneyYuan(
+  const refundApplyAmount = parseYuanAmount(
     returnInfo.return_amt
       ?? returnInfo.refund_amount
       ?? returnInfo.apply_amount
       ?? afterSale.apply_amount
       ?? afterSale.refund_apply_amount,
   );
-  const refundActualAmount = parseMoneyYuan(
+  const refundActualAmount = parseYuanAmount(
     returnInfo.refunded_amount ?? afterSale.refund_amount ?? afterSale.actual_refund_amount,
   );
   const expressNos = [];
@@ -136,7 +138,7 @@ function normalizeAfterSale(data, hints = {}) {
   const returnsId = firstNonEmpty(hints.returnsId, extractReturnsId(raw), extractReturnsId(afterSale));
   const refundApplyAmount = pickRefundApplyFromReturnsV3(afterSale) ?? pickRefundApplyFromReturnsV3(raw);
   const refundActualAmount = pickRefundActualFromReturnsV3(afterSale) ?? pickRefundActualFromReturnsV3(raw);
-  const paidAmount = parseMoneyYuan(
+  const paidAmount = parseYuanAmount(
     afterSale.paid_amount ?? raw.paid_amount ?? afterSale.order_amount,
   );
   const status = String(afterSale.status || raw.status || '').trim();
@@ -168,14 +170,14 @@ function normalizeSfFee(result) {
     else if (/8151|8148/.test(msg)) errorCode = 'not_found';
     return { sfFee: null, error: msg, errorCode, waybill };
   }
-  const fee = result.totalFee != null ? Math.round(Number(result.totalFee) * 100) / 100 : null;
+  const fee = result.totalFee != null ? roundYuan(result.totalFee) : null;
   return { sfFee: fee, error: null, errorCode: null, waybill };
 }
 
 function computeProfit(paidAmount, refundApplyAmount, sfFee) {
   if (paidAmount == null || refundApplyAmount == null) return null;
   const sf = sfFee != null ? sfFee : 0;
-  return Math.round((paidAmount - refundApplyAmount - sf) * 100) / 100;
+  return roundYuan(paidAmount - refundApplyAmount - sf);
 }
 
 function mergeCardDto(parts = {}) {
@@ -236,6 +238,8 @@ function pickSfWaybill(expressNos) {
 }
 
 module.exports = {
+  parseYuanAmount,
+  parseFenAmount,
   parseMoneyYuan,
   extractReturnsId,
   normalizePackageDetail,
@@ -244,4 +248,5 @@ module.exports = {
   mergeCardDto,
   pickSfWaybill,
   pickRefundApplyFromReturnsV3,
+  computeProfit,
 };
