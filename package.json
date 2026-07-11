@@ -1,11 +1,17 @@
 {
   "name": "xhs-qf-sf-fee",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "private": true,
-  "description": "千帆客服台顺丰月结扣费内嵌 — CDP 自动注入",
+  "description": "千帆客服台顺丰月结扣费 — 统一 Data Core Runtime",
   "scripts": {
-    "start": "node src/auto-inject.js",
+    "start": "node src/runtime.js",
+    "start:runtime": "node src/runtime.js",
+    "start:legacy-inject": "node src/injection-daemon.js",
+    "check": "node scripts/check-all-versions.js && node scripts/smoke-health.js",
     "check:versions": "node scripts/check-all-versions.js",
+    "test": "node --test test/**/*.test.js",
+    "test:core": "node --test test/core/**/*.test.js",
+    "smoke": "node scripts/smoke-health.js",
     "reinject": "node scripts/force-reinject.js",
     "install:autostart": "node scripts/install-autostart.js",
     "start:fee-web": "node shunfengchafeiyong/server.js"

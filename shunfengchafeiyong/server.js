@@ -76,7 +76,7 @@ function mergeRow(meta, fee) {
   };
 }
 
-async function handleBatchQuery(cfg, body) {
+async function handleBatchQuery(cfg, body, dataCore) {
   let rows = [];
   if (body.mode === 'csv' && body.text) {
     rows = parseCsv(body.text);
@@ -106,10 +106,29 @@ async function handleBatchQuery(cfg, body) {
   }
 
   const metaByWaybill = new Map(rows.map((r) => [r.waybill, r]));
-  const fees = await querySfWaybillFees(rows.map((r) => r.waybill), cfg.sf, {
-    concurrency: 6,
-    delayMs: 60,
-  });
+  let fees;
+  if (dataCore) {
+    fees = await Promise.all(rows.map(async (r) => {
+      try {
+        const result = await dataCore.fetchSfFee(r.waybill);
+        const d = result.data || {};
+        return {
+          waybill: r.waybill,
+          ok: d.sfFee != null,
+          totalFee: d.sfFee,
+          error: d.error || '',
+          apiCode: d.errorCode || '',
+        };
+      } catch (e) {
+        return { waybill: r.waybill, ok: false, totalFee: null, error: e.message, apiCode: e.code || '' };
+      }
+    }));
+  } else {
+    fees = await querySfWaybillFees(rows.map((r) => r.waybill), cfg.sf, {
+      concurrency: 6,
+      delayMs: 60,
+    });
+  }
   const results = fees.map((fee) => mergeRow(metaByWaybill.get(fee.waybill) || { waybill: fee.waybill }, fee));
 
   results.sort((a, b) => {
@@ -154,8 +173,9 @@ function serveStatic(req, res, basePath, urlPath) {
   });
 }
 
-function createServer() {
+function createServer(options = {}) {
   const { sf, webPort, basePath } = loadConfig();
+  const dataCore = options.dataCore || null;
 
   return http.createServer(async (req, res) => {
     try {
@@ -207,7 +227,7 @@ function createServer() {
       if (pathname === `${basePath}/api/batch-query` && req.method === 'POST') {
         const raw = await readBody(req, 30 * 1024 * 1024);
         const body = JSON.parse(raw || '{}');
-        const data = await handleBatchQuery({ sf }, body);
+        const data = await handleBatchQuery({ sf }, body, dataCore);
         if (data.ok) {
           feeLog(`批量查询 ${data.count} 单 · 成功 ${data.successCount} · 失败 ${data.failCount} · 运费合计 ¥${data.totalFee}`);
         } else {

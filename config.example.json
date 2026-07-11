@@ -4,6 +4,7 @@
   "pollIntervalMs": 2500,
   "sfFeeWebPort": 6666,
   "packageProxyPort": 4725,
+  "dataCoreMode": "prefer-core",
   "sf": {
     "partnerID": "",
     "checkWord": "",
