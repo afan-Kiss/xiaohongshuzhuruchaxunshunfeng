@@ -3,18 +3,30 @@
  * 由 src/auto-inject.js 通过 CDP 自动注入。
  */
 (function qfSfFeeInlineBootstrap() {
-  const VERSION = '2.1.8';
+  const VERSION = '2.2.4';
   const STORAGE_KEY = 'qf_sf_fee_config_v1';
   const STYLE_ID = 'qf-sf-fee-inline-style';
   const SF_PROD = 'https://sfapi.sf-express.com/std/service';
   const SF_SBOX = 'https://sfapi-sbox.sf-express.com/std/service';
   const SF_ERR_CACHE_TTL_MS = 30 * 60 * 1000;
   const PKG_DETAIL_COOLDOWN_MS = 8000;
+  const PKG_DETAIL_HOOK_WAIT_MS = 320;
   const SCAN_DEBOUNCE_MS = 600;
   const MAX_CARD_RETRY = 2;
   const MONEY_EPS = 0.005;
 
-  const PKG_DETAIL_HOOK_WAIT_MS = 320;
+  const EXPRESS_CACHE_MAX = 400;
+
+  function trimExpressCache() {
+    if (expressCache.size <= EXPRESS_CACHE_MAX) return;
+    const drop = expressCache.size - EXPRESS_CACHE_MAX;
+    const keys = expressCache.keys();
+    for (let i = 0; i < drop; i++) {
+      const k = keys.next().value;
+      if (k == null) break;
+      expressCache.delete(k);
+    }
+  }
 
   const expressCache = new Map();
   const sfFeeInflight = new Map();
@@ -97,6 +109,8 @@
     cardRenderCache.clear();
     cardRetryCount.clear();
     cardStableKeys.clear();
+    expressCache.clear();
+    sfFeeInflight.clear();
     document.querySelectorAll('.qsf-inline-fee-wrap').forEach((el) => el.remove());
   }
 
@@ -161,11 +175,8 @@
 
   function isPackageDetailUrl(url) {
     const u = String(url || '');
-    if (!/package/i.test(u)) return false;
-    if (/package-detail|package_detail|get_package|packageinfo|package_info|packageId|package_id/i.test(u)) {
-      return true;
-    }
-    return /\/package\/[^/?#]+/i.test(u);
+    return /\/package\/[^/?#]+\/detail/i.test(u)
+      || /package-detail|package_detail/i.test(u);
   }
 
   async function waitForPackageCache(packageId, ms = PKG_DETAIL_HOOK_WAIT_MS) {
@@ -485,20 +496,47 @@
     return pickAfterSaleFromData(data);
   }
 
+  function pickRefundApplyFromReturnsV3(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const applied = parseMoneyYuan(raw.applied_amount ?? raw.appliedAmount);
+    if (applied != null && applied > 0) return applied;
+    const expected = parseMoneyYuan(raw.expected_refund_amount ?? raw.expectedRefundAmount);
+    if (expected != null && expected > 0) return expected;
+    const skuSum = parseMoneyYuan(raw.applied_skus_amount_sum ?? raw.appliedSkusAmountSum);
+    const shipFee = parseMoneyYuan(raw.applied_ship_fee_amount ?? raw.appliedShipFeeAmount);
+    if (skuSum != null || shipFee != null) {
+      const total = (skuSum ?? 0) + (shipFee ?? 0);
+      if (total > 0) return total;
+    }
+    const expectOnly = parseMoneyYuan(raw.expect_refund_fee ?? raw.expectRefundFee);
+    if (expectOnly != null && expectOnly > 0) return expectOnly;
+    return null;
+  }
+
   function parseReturnsV3Response(json) {
     const raw = json?.data?.after_sale || json?.data;
     if (!raw || typeof raw !== 'object') return null;
     const returnsId = String(raw.returns_id || raw.returnsId || '').trim();
     const packageId = String(raw.package_id || raw.packageId || '').trim();
-    return normalizeAfterSale({
-      type: raw.returns_type_name || raw.type || '售后',
+    const refundApplyAmount = pickRefundApplyFromReturnsV3(raw);
+    const refundActualAmount = parseMoneyYuan(raw.refund_fee ?? raw.refundFee);
+    const base = normalizeAfterSale({
+      type: raw.returns_type_name || raw.return_type_name || raw.type || '售后',
       status: raw.status_name || String(raw.status || ''),
-      refundApplyAmount: raw.expect_refund_fee ?? raw.expectRefundFee,
-      refundActualAmount: raw.refund_fee ?? raw.refundFee,
+      refundApplyAmount,
+      refundActualAmount: refundActualAmount > 0 ? refundActualAmount : null,
+    });
+    if (!base && !returnsId) return null;
+    return {
+      ...(base || {}),
+      type: base?.type || raw.returns_type_name || raw.return_type_name || raw.type || '售后',
+      status: base?.status || raw.status_name || String(raw.status || ''),
+      refundApplyAmount: refundApplyAmount ?? base?.refundApplyAmount ?? null,
+      refundActualAmount: (refundActualAmount > 0 ? refundActualAmount : null) ?? base?.refundActualAmount ?? null,
       returnsId,
       packageId,
       fromAfterSaleApi: true,
-    });
+    };
   }
 
   function afterSaleCacheKey(returnsId) {
@@ -600,7 +638,7 @@
       : { rowKind: '', suffix: '', title: '' };
     const parts = [];
     if (afterSale?.fromAfterSaleApi && afterSale?.refundApplyAmount != null) {
-      parts.push('来自售后 API expect_refund_fee');
+      parts.push('来自售后 API applied_amount');
     } else if (afterSale?.fromReturnInfo && afterSale?.refundApplyAmount != null) {
       parts.push('来自订单 API return_info');
     } else if (afterSale?.pendingRefund) {
@@ -612,6 +650,22 @@
     }
     if (warn.title) parts.push(warn.title);
     return { title: parts.join(' · '), ...warn };
+  }
+
+  function isFeeTextFinal(text) {
+    const t = String(text || '').trim();
+    if (!t || t === '…' || t === '查询中…') return false;
+    return true;
+  }
+
+  function canMarkCardStable(blocks, showRefund, afterSale, returnsId) {
+    const feeBlock = (blocks || []).find((b) => b.label === '月结费用：');
+    if (!isFeeTextFinal(feeBlock?.text)) return false;
+    if (showRefund && isAwaitingAfterSaleApi(afterSale, returnsId)) return false;
+    if (showRefund && resolveRefundApplyAmount(afterSale) == null && returnsId && !afterSale?.fetchError) {
+      return false;
+    }
+    return true;
   }
 
   function cardBlocksSig(blocks) {
@@ -705,12 +759,62 @@
     };
   }
 
-  function cardHasAfterSaleSignals(card) {
-    if (!card) return false;
-    if (card.querySelector(
-      '.after-sale-box, .sku-after-sale, .sku-after-sale-status, [class*="after-sale"], [class*="after_sale"]',
-    )) return true;
-    return /退款|退货|换货|售后/.test(card.innerText || '');
+  function shouldShowRefundRow(card, afterSale, returnsId) {
+    if (returnsId) return true;
+    if (resolveRefundApplyAmount(afterSale) != null) return true;
+    if (afterSale?.fromAfterSaleApi) return true;
+    if (card?.querySelector('.after-sale-box, .sku-after-sale, .sku-after-sale-status')) return true;
+    const statusText = (card?.querySelector('.sku-after-sale-status')?.textContent || '').trim();
+    if (statusText && /退|换货|售后/.test(statusText)) return true;
+    const headText = (card?.innerText || '').slice(0, 160);
+    if (/售后完成|售后中/.test(headText)) return true;
+    if (/(?:退货|退款|换货)\s*[|｜]/.test(headText)) return true;
+    return false;
+  }
+
+  function isAwaitingAfterSaleApi(afterSale, returnsId) {
+    if (!returnsId) return false;
+    if (resolveRefundApplyAmount(afterSale) != null) return false;
+    if (afterSale?.fetchError) return false;
+    return true;
+  }
+
+  function describeProxyFetchError(err) {
+    const msg = String(err?.message || err || '').trim();
+    if (!msg || /abort/i.test(msg)) return '订单代理未响应，请运行 npm start';
+    if (/failed to fetch|network|ECONNREFUSED|ERR_CONNECTION/i.test(msg)) {
+      return '订单代理未启动，请运行 npm start';
+    }
+    return msg;
+  }
+
+  async function fetchAfterSaleDirectFromPage(returnsId, packageId) {
+    const rid = String(returnsId || '').trim();
+    if (!rid) return null;
+    const url = `https://ark.xiaohongshu.com/api/edith/after-sales/returns_v3/${encodeURIComponent(rid)}`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const res = await fetch(url, {
+        credentials: 'include',
+        signal: ctrl.signal,
+        headers: { Accept: 'application/json, text/plain, */*' },
+      });
+      const json = await res.json().catch(() => null);
+      if (json?.data) {
+        const parsed = parseReturnsV3Response({ ok: true, data: json.data });
+        if (parsed) {
+          parsed.viaPageFetch = true;
+          return parsed;
+        }
+      }
+      if (!res.ok) return { fromAfterSaleApi: true, fetchError: `页面售后 API HTTP ${res.status}`, returnsId: rid, packageId };
+    } catch (err) {
+      return { fromAfterSaleApi: true, fetchError: describeProxyFetchError(err), returnsId: rid, packageId };
+    } finally {
+      clearTimeout(timer);
+    }
+    return null;
   }
 
   function mergeAfterSalePreferApi(domSale, apiSale) {
@@ -817,6 +921,7 @@
         const total = fees.reduce((s, f) => s + (Number(f.feeAmt ?? f.value) || 0), 0) || info.totalFee;
         const result = stampFeeCache({ ok: true, totalFee: total, waybillNo: info.waybillNo || no });
         expressCache.set(ck, result);
+        trimExpressCache();
         return result;
       } catch (err) {
         return { ok: false, error: String(err.message || err) };
@@ -918,8 +1023,12 @@
     if (afterSaleInflight.has(ck)) return afterSaleInflight.get(ck);
 
     const job = (async () => {
+      let lastError = '';
       try {
-        const res = await fetch(buildAfterSaleProxyUrl(rid, packageId));
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 6000);
+        const res = await fetch(buildAfterSaleProxyUrl(rid, packageId), { signal: ctrl.signal });
+        clearTimeout(timer);
         const envelope = await res.json().catch(() => null);
         if (envelope?.ok && envelope.data) {
           const parsed = parseReturnsV3Response(envelope);
@@ -928,9 +1037,31 @@
             afterSaleApiCache.set(ck, parsed);
             return parsed;
           }
+          lastError = '售后数据无申请金额';
+        } else {
+          lastError = envelope?.error || `代理 HTTP ${res.status}`;
         }
-      } catch { /* ignore */ }
-      return cached || null;
+      } catch (err) {
+        lastError = describeProxyFetchError(err);
+      }
+
+      const pageParsed = await fetchAfterSaleDirectFromPage(rid, packageId);
+      if (pageParsed?.refundApplyAmount != null) {
+        afterSaleFetchedAt.set(ck, Date.now());
+        afterSaleApiCache.set(ck, pageParsed);
+        return pageParsed;
+      }
+      if (pageParsed?.fetchError && !lastError) lastError = pageParsed.fetchError;
+
+      const failed = {
+        fromAfterSaleApi: true,
+        fetchError: lastError || '售后查询失败',
+        returnsId: rid,
+        packageId: String(packageId || '').trim(),
+      };
+      afterSaleFetchedAt.set(ck, Date.now());
+      afterSaleApiCache.set(ck, failed);
+      return cached?.refundApplyAmount != null ? cached : failed;
     })();
 
     afterSaleInflight.set(ck, job);
@@ -1096,13 +1227,15 @@
 
     const wrap = ensureFeeWrap(card);
     const returnsId = extractReturnsIdFromCard(card);
-    const hasAfterSale = cardHasAfterSaleSignals(card) || Boolean(returnsId);
+    const hasAfterSale = shouldShowRefundRow(card, null, returnsId);
     const cachedRender = cardRenderCache.get(renderCacheKey(packageId));
+    const retryCount = cardRetryCount.get(packageId) || 0;
 
+    // 无售后订单：短暂占位，避免空白；失败时不显示 —
     if (!silent && !cachedRender) {
       renderCardInfo(wrap, [
-        { label: '月结费用：', text: '查询中…', kind: 'loading' },
-        ...(hasAfterSale ? [{ label: '用户申请退款金额：', text: '查询中…', kind: 'loading' }] : []),
+        { label: '月结费用：', text: '…', kind: 'muted' },
+        ...(returnsId || hasAfterSale ? [{ label: '用户申请退款金额：', text: '…', kind: 'muted' }] : []),
       ]);
     }
 
@@ -1157,6 +1290,8 @@
       const blocks = [];
       const cfg = loadConfig();
       let sfFeeTotal = null;
+      let feeFallback = null;
+      let feeQueryFailed = false;
       const detailCtx = { erpStatus };
       const noExpress = shouldShowNoExpress(card, detailCtx, expressNos, rawExpress);
       const nonSfExpress = !noExpress && isNonSfExpress(rawExpress);
@@ -1169,7 +1304,6 @@
       } else if (!expressNos.length) {
         blocks.push({ label: '月结费用：', text: '无单号', kind: 'muted', title: '无顺丰运单号' });
       } else {
-        let feeFallback = null;
         for (const no of expressNos) {
           if (isSessionStale(gen)) return;
           const fee = await querySfWaybillFee(no, cfg);
@@ -1185,19 +1319,22 @@
         } else if (feeFallback?.skipped) {
           blocks.push({ label: '月结费用：', text: '非顺丰', kind: 'muted' });
         } else {
+          feeQueryFailed = true;
+          const giveUp = retryCount >= MAX_CARD_RETRY;
           blocks.push({
             label: '月结费用：',
-            text: '—',
+            text: giveUp ? '—' : '…',
             kind: 'muted',
-            title: feeFallback?.error || '查询失败',
+            title: feeFallback?.error || (giveUp ? '查询失败' : '查询中'),
           });
         }
       }
 
       const refundApplyAmt = resolveRefundApplyAmount(afterSale);
       const refundDisplayAmt = resolveRefundDisplayAmount(afterSale);
+      const showRefund = shouldShowRefundRow(card, afterSale, returnsId);
       const sk = stableKey(packageId);
-      if (hasAfterSale || refundDisplayAmt != null || afterSale) {
+      if (showRefund) {
         if (refundDisplayAmt != null) {
           const meta = refundDisplayMeta(afterSale, paidAmount);
           blocks.push({
@@ -1209,10 +1346,15 @@
           });
           const profitBlock = buildProfitBlock(paidAmount, refundApplyAmt, sfFeeTotal, meta.rowKind);
           if (profitBlock) blocks.push(profitBlock);
-        } else if (hasAfterSale && (returnsId || afterSale)) {
-          blocks.push({ label: '用户申请退款金额：', text: '查询中…', kind: 'loading' });
+        } else if (isAwaitingAfterSaleApi(afterSale, returnsId)) {
+          blocks.push({ label: '用户申请退款金额：', text: '…', kind: 'muted' });
         } else {
-          blocks.push({ label: '用户申请退款金额：', text: '—', kind: 'muted' });
+          blocks.push({
+            label: '用户申请退款金额：',
+            text: '—',
+            kind: 'muted',
+            title: afterSale?.fetchError || '无申请金额',
+          });
         }
       }
 
@@ -1223,23 +1365,26 @@
       if (isSessionStale(gen)) return;
 
       const sig = cardBlocksSig(blocks);
-      const hasLoading = blocks.some((b) => b.kind === 'loading' || b.text === '查询中…');
+      const hasLoading = blocks.some((b) => b.kind === 'loading');
       if (cachedRender?.sig !== sig) {
         cardRenderCache.set(renderCacheKey(packageId), { sig, blocks });
         renderCardInfo(wrap, blocks);
       } else if (!wrap.querySelector('.qsf-inline-fee-row')) {
         renderCardInfo(wrap, blocks);
       }
-      if (!hasLoading && (noExpress || expressNos.length || nonSfExpress) && (!hasAfterSale || refundApplyAmt != null || !returnsId)) {
+      if (!hasLoading && canMarkCardStable(blocks, showRefund, afterSale, returnsId)) {
         cardStableKeys.add(sk);
+      } else {
+        cardStableKeys.delete(sk);
       }
 
-      const retries = cardRetryCount.get(packageId) || 0;
-      const needRefundRetry = hasAfterSale && returnsId && refundApplyAmt == null && retries < MAX_CARD_RETRY;
-      const needReturnsIdRetry = hasAfterSale && !returnsId && retries < MAX_CARD_RETRY;
+      const retries = retryCount;
+      const needRefundRetry = showRefund && returnsId && isAwaitingAfterSaleApi(afterSale, returnsId)
+        && retries < MAX_CARD_RETRY && !afterSale?.fetchError;
       const shouldRetryExpress = !noExpress && !nonSfExpress && !hasLoading && !expressNos.length
         && !cardStableKeys.has(sk) && card.isConnected && retries < MAX_CARD_RETRY;
-      if ((shouldRetryExpress || needRefundRetry || needReturnsIdRetry) && card.isConnected) {
+      const needFeeRetry = feeQueryFailed && retryCount < MAX_CARD_RETRY && card.isConnected;
+      if ((shouldRetryExpress || needRefundRetry || needFeeRetry) && card.isConnected) {
         cardRetryCount.set(packageId, retries + 1);
         cardJobs.delete(jobKey);
         const prevTimer = cardRetryTimers.get(packageId);
@@ -1255,15 +1400,23 @@
       cardRetryCount.delete(packageId);
     } catch (err) {
       if (!silent && !isSessionStale(gen)) {
-        renderCardInfo(wrap, [{
+        const errBlocks = [{
           label: '月结费用：',
-          text: '—',
+          text: '…',
           kind: 'muted',
           title: String(err.message || err),
-        }]);
+        }];
+        if (returnsId || hasAfterSale) {
+          errBlocks.push({ label: '用户申请退款金额：', text: '…', kind: 'muted' });
+        }
+        renderCardInfo(wrap, errBlocks);
       }
+      cardStableKeys.delete(stableKey(packageId));
     } finally {
       cardJobs.delete(jobKey);
+      if (isSessionStale(gen) && wrap && !wrap.querySelector('.qsf-inline-fee-row')) {
+        wrap.remove();
+      }
     }
   }
 
@@ -1281,9 +1434,14 @@
       const jobKey = `${activeSessionKey}:${pid}`;
       if (cardJobs.get(jobKey) === 'running') return;
       const wrap = card.querySelector('.qsf-inline-fee-wrap');
+      const cachedRender = cardRenderCache.get(renderCacheKey(pid));
       if (cardStableKeys.has(sk) && wrap) {
-        repositionFeeWrap(card, wrap);
-        return;
+        const feeText = cachedRender?.blocks?.find((b) => b.label === '月结费用：')?.text;
+        if (isFeeTextFinal(feeText)) {
+          repositionFeeWrap(card, wrap);
+          return;
+        }
+        cardStableKeys.delete(sk);
       }
       if (cardStableKeys.has(sk) && !wrap) {
         cardStableKeys.delete(sk);
@@ -1459,6 +1617,9 @@
     packageDetailCache.clear();
     packageDetailFetchedAt.clear();
     packageDetailInflight.clear();
+    afterSaleApiCache.clear();
+    afterSaleFetchedAt.clear();
+    afterSaleInflight.clear();
     cardRenderCache.clear();
     cardRetryCount.clear();
     cardStableKeys.clear();
