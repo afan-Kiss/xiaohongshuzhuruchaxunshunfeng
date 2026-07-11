@@ -13,7 +13,46 @@
     }
   },
   "data": {
+    "expect_send_time": "2026-07-03",
     "ship_time_format": "晚发必赔，最晚07月03日13:07发货",
+    "pay_status": 1,
+    "return_info": [
+      {
+        "record_id": "6a4f5d931d41000000000001",
+        "trade_no": "2026070123001481411451009603",
+        "package_id": "P_FIXTURE_4",
+        "finish_at": "2026-07-09 16:36:37",
+        "fail_description": "订单退款成功",
+        "return_method": "支付宝",
+        "time": "2026-07-09 16:36:37",
+        "return_amt": 2400,
+        "status_str": "退款成功",
+        "type": "退货退款"
+      }
+    ],
+    "express_company": "顺丰速运",
+    "phone": "138****0000",
+    "send_from": "中国大陆",
+    "package_type": "normal",
+    "create_time": 1782882418,
+    "total_member_discount": 0,
+    "pay_infos": [
+      {
+        "pay_method": "支付宝",
+        "term_num": 0,
+        "total_fee": 0
+      }
+    ],
+    "customer_rest_amount": 0,
+    "express_number": "SF_FIXTURE_004",
+    "total_tax_amount": 0,
+    "contract_ship_hour": 0,
+    "canCurrentCsaReadAddr": true,
+    "package_id": "P_FIXTURE_4",
+    "total_coupon_discount": 0,
+    "user_name": "[NAME]",
+    "cancel_records": [],
+    "pay_time": 1782882430,
     "seller_mark_info": {
       "updated_at": 1782976101,
       "seller_mark_priority": 1,
@@ -21,36 +60,48 @@
       "operator": "拾玉居和田玉"
     },
     "finish_time": 0,
+    "user_note_time": 0,
+    "total_promotion_discount": 0,
+    "whname": "[NAME]",
+    "total_deposit_amount": 2418,
+    "is_deposit_presale": false,
+    "total_quantity": 1,
+    "is_self_merchant": false,
+    "free_shipping_threshold": 0,
+    "pay_method": "支付宝",
+    "tickets": [],
+    "total_member_tax_discount": 0,
+    "seller_id": "6a1a80892300910015e858f8",
+    "order_id": "79843441877302231",
     "erp_status_str": "已关闭",
-    "express_company": "顺丰速运",
-    "total_tax_amount": 0,
+    "status": 71,
+    "delivery_packages": [
+      {
+        "express_no": "SF_FIXTURE_004",
+        "express_company_code": "shunfeng",
+        "express_company_name": "[NAME]",
+        "delivery_package_id": "P_FIXTURE_4",
+        "goods_ids": [
+          "6a4484856947da0015ac0756"
+        ]
+      }
+    ],
+    "cancel_applied": false,
+    "relation_packages": [],
+    "user_id": "5ccfb0ca000000001203b2b0",
+    "deal_price": 2400,
+    "seller_name": "[NAME]",
+    "logistics_mode": "内贸",
     "customer_pay_amount": 2418,
     "user_nick_name": "[NAME]",
     "whcode": "CPartner",
+    "decryptResultDetailType": 0,
+    "address": "[REDACTED_PAYLOAD]",
+    "trans_price": 18,
     "raw_price": 2400,
-    "create_time": 1782882418,
-    "expect_send_time": "2026-07-03",
-    "pay_status": 1,
-    "total_quantity": 1,
-    "canCurrentCsaReadAddr": true,
-    "deal_price": 2400,
-    "send_from": "中国大陆",
-    "whname": "[NAME]",
-    "pay_method": "支付宝",
-    "tickets": [],
     "sku_snapshots": [
       {
-        "image": "//qimg.xiaohongshu.com/arkgoods/1040g3ng3222j0tp1ne105q78jbotojr3btfsqg0?itemId=6a4484856947da0015ac0756&imageView2/1/w/320/h/320/q/90.jpg",
-        "ret_exg_policy": {
-          "state": 0,
-          "title": "7天无理由退货",
-          "desc": "满足相应条件时，消费者可申请“七天无理由退货”。"
-        },
-        "sku_sale_price": 2400,
-        "sku_pay_amount": 2418,
-        "total_price": 2400,
-        "sku_id": "6a4484856947da0015ac0756",
-        "name": "[NAME]",
+        "item_id": "6a4484856947da0015ac0755",
         "sku_boutique_info": {
           "boutique_mode_code": 0,
           "delivery_time_min": 0,
@@ -58,30 +109,42 @@
           "vendor_type": 0,
           "separate": false
         },
-        "total_raw_price": 2400,
-        "platform_discount_amount": 0,
-        "price": 2400,
+        "raw_price": 2400,
+        "scsku_code": "6a4484856947da0015ac0757",
         "sell_guarantee_infos": [
           "7天无理由退货",
           "极速退款",
           "晚发必赔"
         ],
-        "item_id": "6a4484856947da0015ac0755",
-        "quantity": 1,
+        "sku_id": "6a4484856947da0015ac0756",
+        "ret_exg_policy": {
+          "state": 0,
+          "title": "7天无理由退货",
+          "desc": "满足相应条件时，消费者可申请“七天无理由退货”。"
+        },
+        "tax_amount": 0,
+        "platform_discount_amount": 0,
+        "sku_sale_price": 2400,
+        "sku_pay_amount": 2418,
+        "total_price": 2400,
+        "status_name": "[NAME]",
+        "name": "[NAME]",
+        "image": "//qimg.xiaohongshu.com/arkgoods/1040g3ng3222j0tp1ne105q78jbotojr3btfsqg0?itemId=6a4484856947da0015ac0756&imageView2/1/w/320/h/320/q/90.jpg",
+        "total_raw_price": 2400,
         "categories": [
           {
-            "version": 0,
             "level": 1,
             "id": "65f997603e946300016b3469",
             "name": "[NAME]",
-            "ename": "[NAME]"
+            "ename": "[NAME]",
+            "version": 0
           },
           {
-            "level": 2,
             "id": "65f997603e946300016b3478",
             "name": "[NAME]",
             "ename": "[NAME]",
-            "version": 0
+            "version": 0,
+            "level": 2
           },
           {
             "id": "65f997613e946300016b3482",
@@ -92,75 +155,12 @@
           }
         ],
         "seller_discount_amount": 0,
-        "scsku_code": "6a4484856947da0015ac0757",
-        "status_name": "[NAME]",
-        "return_type": 1,
-        "tax_amount": 0,
-        "raw_price": 2400,
         "sku_deposit_amount": 0,
-        "presale_ship_date": ""
+        "return_type": 1,
+        "presale_ship_date": "",
+        "quantity": 1,
+        "price": 2400
       }
-    ],
-    "user_id": "5ccfb0ca000000001203b2b0",
-    "pay_infos": [
-      {
-        "pay_method": "支付宝",
-        "term_num": 0,
-        "total_fee": 0
-      }
-    ],
-    "order_id": "U_FIXTURE",
-    "seller_name": "[NAME]",
-    "cancel_records": [],
-    "logistics_mode": "内贸",
-    "status": 71,
-    "seller_id": "6a1a80892300910015e858f8",
-    "is_self_merchant": false,
-    "user_note_time": 0,
-    "package_id": "P_FIXTURE_4",
-    "express_number": "SF_FIXTURE_004",
-    "user_name": "[NAME]",
-    "total_deposit_amount": 2418,
-    "contract_ship_hour": 0,
-    "relation_packages": [],
-    "free_shipping_threshold": 0,
-    "decryptResultDetailType": 0,
-    "address": "[ADDRESS]",
-    "phone": "138****0000",
-    "total_coupon_discount": 0,
-    "package_type": "normal",
-    "delivery_packages": [
-      {
-        "goods_ids": [
-          "6a4484856947da0015ac0756"
-        ],
-        "express_no": "SF_FIXTURE_004",
-        "express_company_code": "shunfeng",
-        "express_company_name": "[NAME]",
-        "delivery_package_id": "P_FIXTURE_4"
-      }
-    ],
-    "total_member_discount": 0,
-    "return_info": [
-      {
-        "finish_at": "2026-07-09 16:36:37",
-        "trade_no": "U_FIXTURE",
-        "time": "2026-07-09 16:36:37",
-        "return_amt": 2400,
-        "status_str": "退款成功",
-        "type": "退货退款",
-        "record_id": "6a4f5d931d41000000000001",
-        "fail_description": "订单退款成功",
-        "return_method": "支付宝",
-        "package_id": "P_FIXTURE_4"
-      }
-    ],
-    "cancel_applied": false,
-    "trans_price": 18,
-    "total_promotion_discount": 0,
-    "pay_time": 1782882430,
-    "is_deposit_presale": false,
-    "customer_rest_amount": 0,
-    "total_member_tax_discount": 0
+    ]
   }
 }

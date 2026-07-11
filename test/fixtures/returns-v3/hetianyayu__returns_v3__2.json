@@ -15,780 +15,593 @@
   },
   "data": {
     "after_sale": {
-      "deductible_amount": 0,
-      "pay_amount": 0,
-      "exchange_user_finish_deadline": 0,
-      "fill_express_no_deadline": 1784129948000,
-      "reject_ticket_status": 0,
-      "refund_ok_time": 1783765219889,
-      "package_type_name": "[NAME]",
-      "return_express_fee": 10,
-      "ship_whcode": "CPartner",
-      "is_member": false,
-      "reason_duty_owner": 4,
-      "return_recipient": "东哥",
-      "exchange_signed_time": 0,
-      "order_id": "U_FIXTURE",
-      "expect_refund_fee": 899,
-      "arbitrate_before_status": 0,
-      "after_sale_tob_tags": [],
-      "return_type": 1,
-      "system_version": 1,
-      "work_bench_gray_merchant": true,
-      "ship_without_logistic": false,
-      "request_from": 2,
-      "auto_receive_deadline": 1783933395000,
-      "abnormal_deadline": 0,
-      "route_to_dispute": true,
-      "ship_express_fee": 0,
-      "return_express_company": "顺丰速运",
-      "return_whcode_name": "[NAME]",
-      "package_payment_type": 1,
-      "return_express_refunded": false,
-      "receive_abnormal_type_name": "[NAME]",
-      "desc": "",
-      "note": "",
-      "spam_check_status": 1,
-      "force_receive": false,
-      "use_red_return_service": 3,
-      "exchange_user_confirm_time": 0,
-      "return_address": "[ADDRESS]",
-      "logistics_track_status": 0,
-      "spam_check_status_time": 0,
-      "refund_strategy_user_amount": 0,
-      "whcodes": "[CPartner]",
-      "need_fill_express_to_reject": false,
-      "chain_upgrade": true,
-      "sub_status_name": "[NAME]",
-      "refunded": true,
-      "refund_time": 0,
-      "fill_express_time": 1783598119000,
-      "seller_sign_time": 0,
-      "receive_abnormal_type": 0,
-      "expected_refund_amount": 899,
-      "agree_auto_reject_audit": 0,
-      "reason": 700020,
-      "ship_express_no": "SF_FIXTURE_002",
-      "ship_express_company": "shunfeng",
-      "refund_method": 2,
-      "pay_time": 0,
-      "exchange_transfer_return_price": 0,
-      "exchange_ship_time": 0,
-      "status": 4,
-      "refund_fail_reason": 0,
-      "package_create_time": 1782982497000,
-      "settlement_amount": 0,
-      "deadline_for_sort": 0,
-      "package_payment_type_name": "[NAME]",
-      "refund_strategy_user_membership": 0,
-      "tips_off": "",
-      "applied_amount": 899,
-      "pickup_create_at": 0,
-      "support_old_customer_freight_guard": false,
-      "reason_name_en": "[NAME]",
-      "fast_refund_qualified": false,
-      "refund_status_name": "[NAME]",
-      "abnormal_at": 0,
-      "select_express_type": 1,
-      "seller_ids": [
-        "6a195ac98228a600152aa204"
-      ],
-      "refund_id": "449a29a083e6472e89d63ad5fd0f7bac",
-      "return_whcode": "CPartner",
-      "return_express_status": "6060",
-      "ship_express_status": "6060",
-      "express_sign_synced_time": 0,
-      "proof_photos": [],
-      "return_express_refundable": false,
-      "refund_method_name": "[NAME]",
-      "shipping_model_name": "[NAME]",
-      "return_type_name": "[NAME]",
-      "reissue_id": "",
-      "return_received_type": 2,
-      "return_express_company_code": "shunfeng",
-      "need_receive_and_ship": false,
-      "hit_damage_compensate": false,
-      "after_sale_secondary_reason_ids": [],
-      "refund_undertaker": 0,
-      "reject_ticket_status_time": 0,
-      "need_auto_audit": false,
       "user_id": "5efaa1a10000000001001487",
-      "package_id": "P_FIXTURE_2",
-      "request_from_name": "[NAME]",
-      "return_received_time": 1783765218000,
-      "delivery_package_id": "P_FIXTURE_2",
-      "nick_name": "[NAME]",
-      "time_extension": false,
-      "use_fast_refund": false,
-      "refund_status": 2,
-      "high_risk_user": false,
-      "status_name": "[NAME]",
-      "shipping_model": 0,
-      "abnormal_trigger": 0,
-      "intact_degree": 0,
-      "package_received_time": 0,
-      "ship_needed_name": "[NAME]",
-      "close_reason": 0,
-      "support_carriage_insurance": false,
-      "receive_delay_count": 0,
-      "refund_fee": 899,
-      "update_at": 1783765220000,
-      "pickup_no": "PO78352514750689223",
-      "deductible_tag": false,
-      "returns_tag": 0,
-      "sub_status": 302,
+      "return_recipient": "[NAME]",
+      "express_sign_time": 1783760586000,
+      "reject_ticket_status": 0,
+      "select_express_type": 1,
+      "chain_upgrade": true,
+      "desc": "",
       "skus": [
         {
-          "status": 0,
-          "boutique_compensation_amount": 0,
-          "applied_total_deposit_amount": 0,
+          "post_tax_amount": 899,
+          "deposit_amount": 0,
+          "return_deposit_amount": 0,
+          "delivery_package_status": 7,
+          "multi_scsku": false,
+          "can_apply_total_amount": 0,
           "after_sale_sku_tags": [
             {
-              "name": "[NAME]",
-              "hover": "满足相应条件时，消费者可申请\"七天无理由退换货\"",
-              "pc_url": "https://school.xiaohongshu.com/rule/detail/35/2527",
               "app_url": "https://school.xiaohongshu.com/rule/detail/35/2527?fullscreen=true",
               "icon": "https://ice.frostsky.com/2023/09/05/05477b706591d0e32fa446013111ebfe.png",
-              "sort_id": 0
+              "sort_id": 0,
+              "name": "[NAME]",
+              "hover": "满足相应条件时，消费者可申请\"七天无理由退换货\"",
+              "pc_url": "https://school.xiaohongshu.com/rule/detail/35/2527"
             }
           ],
-          "deposit_amount": 0,
+          "image": "//qimg.xiaohongshu.com/arkgoods/1040g0ao32243kb58nk405q4phgoa9bhc6dtn0j0?itemId=6a46274e98d31b00153c12a0&imageView2/1/w/320/h/320/q/90.jpg",
+          "tax_type": 0,
+          "raw_price": 899,
+          "presale_type": 0,
+          "exceeded_user_application_limit": false,
+          "exchangeable_count": 0,
+          "paid_and_deposit_amount_sum": 0,
+          "whcode": "CPartner",
+          "refundable_count": 0,
+          "guide_returns_price": 0,
+          "max_refund_amount": 0,
+          "version": "x584424595894853632#x584424651663671296#w0",
+          "total_return_amount": 899,
+          "exchanged_count": 0,
+          "scsku_code": "6a46274e98d31b00153c12a1",
+          "applied_total_deposit_amount": 0,
+          "bought_count": 1,
+          "returnable_count": 1,
+          "applied_count": 1,
+          "boutique": false,
+          "return_policy": "7天无理由退货",
+          "user_application_times": 2,
+          "sku_id": "6a46274e98d31b00153c12a0",
+          "tax_rate": 0,
+          "discounted_price": 899,
+          "original_price": 899,
+          "returnable": false,
+          "delivery_package_id": "P_FIXTURE_2",
+          "boutique_compensation_amount": 0,
+          "variants": [],
+          "sku_name": "[NAME]",
+          "price": 899,
+          "refunded_count": 1,
+          "intact_degree": 0,
+          "refunded_amount": 899,
+          "support_carriage_insurance": false,
+          "delivery_package_status_name": "[NAME]",
+          "applied_total_amount": 899,
+          "barcode": "XHS-4FUH834M6GOW",
+          "returned_count": 1,
+          "return_price": 899,
           "scsku_infos": [
             {
+              "expect_scsku_count": 0,
+              "actual_scsku_count": 0,
               "scsku_code": "6a46274e98d31b00153c12a1",
-              "barcode": "XHS-4FUH834M6GOW",
               "scsku_price": 899,
               "pkg_qty": 1,
               "name": "[NAME]",
               "arbitrate_result": 0,
-              "real_scsku_price": 0,
+              "consistent_with_return": false,
+              "sku_id": "6a46274e98d31b00153c12a0",
+              "barcode": "XHS-4FUH834M6GOW",
               "scsku_price_ratio": -1,
               "residual_rate": 0,
-              "consistent_with_return": false,
-              "expect_scsku_count": 0,
-              "actual_scsku_count": 0,
-              "sku_id": "6a46274e98d31b00153c12a0"
+              "real_scsku_price": 0
             }
           ],
-          "return_deposit_amount": 0,
-          "boutique": false,
-          "support_carriage_insurance": false,
-          "delivery_package_status_name": "[NAME]",
-          "applied_total_amount": 899,
-          "can_apply_total_amount": 0,
-          "raw_price": 899,
-          "refundable_count": 0,
-          "total_return_amount": 899,
-          "exchanged_count": 0,
-          "post_tax_amount": 899,
-          "returned_count": 1,
-          "guide_returns_price": 0,
-          "presale_type": 0,
-          "exchangeable_count": 0,
-          "sku_name": "[NAME]",
-          "discounted_price": 899,
+          "status": 0,
           "refunding_amount": 0,
           "name_without_v": "[NAME]",
-          "variants": [],
-          "paid_and_deposit_amount_sum": 0,
-          "tax_rate": 0,
-          "bought_count": 1,
-          "returnable_count": 1,
-          "refunded_count": 1,
-          "max_refund_amount": 0,
-          "delivery_package_status": 7,
-          "exceeded_user_application_limit": false,
-          "sku_id": "6a46274e98d31b00153c12a0",
-          "scsku_code": "6a46274e98d31b00153c12a1",
-          "tax_type": 0,
-          "price": 899,
-          "return_price": 899,
-          "returnable": false,
-          "delivery_package_id": "P_FIXTURE_2",
-          "refunded_amount": 899,
-          "image": "//qimg.xiaohongshu.com/arkgoods/1040g0ao32243kb58nk405q4phgoa9bhc6dtn0j0?itemId=6a46274e98d31b00153c12a0&imageView2/1/w/320/h/320/q/90.jpg",
-          "whcode": "CPartner",
-          "intact_degree": 0,
-          "version": "x584424595894853632#x584424651663671296#w0",
-          "return_policy": "7天无理由退货",
           "tags": [
             "7天无理由退货"
-          ],
-          "user_application_times": 2,
-          "multi_scsku": false,
-          "original_price": 899,
-          "barcode": "XHS-4FUH834M6GOW",
-          "applied_count": 1
+          ]
         }
       ],
-      "return_phone": "138****0000",
-      "use_red": false,
-      "package_type": "normal",
-      "delivery_package_status": 65,
-      "un_delivery_sku_refund": false,
-      "expedite_after_sale_count": 1,
-      "logistics_track_status_time": 0,
-      "tips_on": "",
-      "time": 1783395404000,
+      "fast_refund_qualified": false,
+      "whcodes": "[CPartner]",
+      "shipping_model": 0,
+      "auto_receive_days": 2,
+      "return_express_company_code": "shunfeng",
+      "deductible_amount": 0,
+      "use_red_return_service": 3,
+      "exchange_user_confirm_time": 0,
+      "return_express_no": "SF_FIXTURE_002",
+      "refund_time": 0,
+      "return_express_refundable": false,
+      "refund_method": 2,
+      "return_whcode": "CPartner",
+      "return_whcode_name": "[NAME]",
+      "high_risk_user": false,
+      "reason_name_zh": "[NAME]",
+      "proof_photos": [],
+      "return_express_refunded": false,
+      "expect_refund_fee": 899,
+      "returns_tag": 0,
+      "agree_auto_reject_audit": 0,
+      "auto_receive_deadline": 1783933395000,
+      "deductible_tag": false,
+      "package_type_name": "[NAME]",
+      "ship_without_logistic": false,
       "returns_id": "R_FIXTURE_2",
-      "exchange_package_status": 0,
-      "spam_check_status_for_fast_refund": 0,
+      "reason": 700020,
+      "shipping_model_name": "[NAME]",
+      "receive_abnormal_type": 0,
+      "refund_fail_reason": 0,
+      "fill_express_no_deadline": 1784129948000,
+      "settlement_amount": 0,
+      "package_payment_type": 1,
+      "request_from_name": "[NAME]",
+      "ship_needed": 1,
+      "refund_method_name": "[NAME]",
+      "need_receive_and_ship": false,
+      "time": 1783395404000,
+      "refunded": true,
       "applied_ship_fee_amount": 0,
+      "package_type": "normal",
+      "return_express_fee": 10,
+      "auto_refund_available": false,
+      "spam_check_status_for_fast_refund": 0,
+      "route_to_dispute": true,
+      "return_phone": "138****0000",
+      "abnormal_trigger": 0,
+      "logistics_track_status_time": 0,
+      "update_at": 1783765220000,
+      "nick_name": "[NAME]",
+      "time_extension": false,
+      "support_old_customer_freight_guard": false,
+      "return_express_company": "顺丰速运",
+      "use_fast_refund": false,
+      "spam_check_status_time": 0,
+      "ship_needed_name": "[NAME]",
+      "expected_refund_amount": 899,
+      "user_level": 5,
+      "system_version": 1,
+      "auto_reject_close_deadline": 0,
+      "commented": false,
+      "refund_ok_time": 1783765219889,
+      "return_received_time": 1783765218000,
+      "arbitrate_before_status": 0,
+      "un_delivery_sku_refund": false,
+      "status": 4,
+      "package_received_time": 0,
+      "support_carriage_insurance": false,
+      "exchange_ship_time": 0,
+      "sub_status": 302,
+      "fill_express_time": 1783598119000,
+      "return_type": 1,
+      "refund_status_name": "[NAME]",
+      "return_express_status": "6060",
+      "expedite_after_sale_count": 1,
+      "ship_whcode": "CPartner",
+      "note": "",
+      "seller_ids": [
+        "6a195ac98228a600152aa204"
+      ],
+      "refund_id": "449a29a083e6472e89d63ad5fd0f7bac",
+      "refund_undertaker": 0,
+      "deadline_for_sort": 0,
+      "after_sale_secondary_reason_ids": [],
+      "refund_fee": 899,
+      "intact_degree": 0,
+      "pay_time": 0,
+      "pickup_no": "PO78352514750689223",
+      "need_auto_audit": false,
+      "tips_on": "",
+      "tips_off": "",
+      "close_reason": 0,
+      "return_received_type": 2,
+      "package_id": "P_FIXTURE_2",
+      "status_name": "[NAME]",
+      "refund_strategy_user_amount": 0,
+      "package_create_time": 1782982497000,
+      "pay_amount": 0,
       "negotiate_order": [
         {
-          "status": 2,
-          "origin_negotiate_returns_name": "[NAME]",
           "origin_negotiate_returns_amount": 917,
+          "origin_negotiate_returns_reason_name": "[NAME]",
+          "merchant_comment": "经过沟通，我们将调整您的退款金额。",
+          "negotiate_scene_name": "[NAME]",
+          "negotiate_returns_reason": 700020,
+          "origin_negotiate_returns_type": 1,
           "origin_negotiate_returns_reason": 700020,
-          "negotiate_comment_desc": "点击接受方案将自动通过售后申请。如您修改申请或逾期未处理，则需等待商家再次处理。如有任何问题可以随时沟通～",
-          "show_contact_seller_button": false,
-          "origin_negotiate_returns_status": 0,
-          "negotiate_returns_type": 1,
-          "can_edit": false,
           "reject_reason": "",
-          "negotiate_scene": 6,
-          "status_name": "[NAME]",
+          "negotiate_returns_type": 1,
           "negotiate_returns_name": "[NAME]",
           "negotiate_returns_reason_name": "[NAME]",
-          "origin_negotiate_returns_type": 1,
-          "merchant_comment": "经过沟通，我们将调整您的退款金额。",
-          "negotiate_id": "N4931669165161831",
-          "negotiate_scene_name": "[NAME]",
-          "negotiate_returns_amount": 899,
-          "negotiate_returns_reason": 700020,
-          "origin_negotiate_returns_reason_name": "[NAME]",
+          "negotiate_comment_desc": "点击接受方案将自动通过售后申请。如您修改申请或逾期未处理，则需等待商家再次处理。如有任何问题可以随时沟通～",
           "cargo_status": 0,
           "negotiate_returns_status": 0,
-          "timeout_auto_reject_enabled": false
+          "show_contact_seller_button": false,
+          "status_name": "[NAME]",
+          "negotiate_scene": 6,
+          "negotiate_id": "N4931669165161831",
+          "origin_negotiate_returns_status": 0,
+          "timeout_auto_reject_enabled": false,
+          "can_edit": false,
+          "status": 2,
+          "negotiate_returns_amount": 899,
+          "origin_negotiate_returns_name": "[NAME]"
         }
       ],
-      "reason_name_zh": "[NAME]",
-      "receive_needed": false,
-      "auto_receive_days": 2,
-      "seller_name": "[NAME]",
-      "ship_needed": 1,
+      "return_address": "[REDACTED_PAYLOAD]",
+      "ship_express_no": "SF_FIXTURE_002",
+      "reissue_id": "",
       "ship_whcode_name": "[NAME]",
-      "commented": false,
-      "auto_refund_available": false,
-      "close_reason_zh": "",
-      "cross_border_export_order": false,
-      "return_express_no": "SF_FIXTURE_002",
-      "user_level": 5,
+      "is_member": false,
+      "force_receive": false,
+      "package_payment_type_name": "[NAME]",
+      "express_sign_synced_time": 0,
+      "receive_abnormal_type_name": "[NAME]",
+      "sub_status_name": "[NAME]",
+      "ship_express_company": "shunfeng",
+      "exchange_user_finish_deadline": 0,
+      "exchange_signed_time": 0,
+      "ship_express_fee": 0,
+      "hit_damage_compensate": false,
+      "receive_needed": false,
+      "request_from": 2,
+      "abnormal_deadline": 0,
+      "ship_express_status": "6060",
+      "return_type_name": "[NAME]",
+      "refund_status": 2,
+      "abnormal_at": 0,
+      "applied_amount": 899,
+      "pickup_create_at": 0,
       "applied_skus_amount_sum": 899,
-      "auto_reject_close_deadline": 0,
-      "express_sign_time": 1783760586000
+      "cross_border_export_order": false,
+      "order_id": "79853449704931669",
+      "seller_name": "[NAME]",
+      "spam_check_status": 1,
+      "delivery_package_id": "P_FIXTURE_2",
+      "use_red": false,
+      "receive_delay_count": 0,
+      "need_fill_express_to_reject": false,
+      "work_bench_gray_merchant": true,
+      "reason_name_en": "[NAME]",
+      "seller_sign_time": 0,
+      "logistics_track_status": 0,
+      "delivery_package_status": 65,
+      "reason_duty_owner": 4,
+      "after_sale_tob_tags": [],
+      "reject_ticket_status_time": 0,
+      "refund_strategy_user_membership": 0,
+      "close_reason_zh": "",
+      "exchange_package_status": 0,
+      "exchange_transfer_return_price": 0
     },
     "extra_info": {
-      "confirm_receive_time": 1783765217879,
-      "refund_info": {
-        "refund_operator_role": 4,
-        "payment_type": 2,
-        "refund_status": 2,
-        "refund_status_name": "[NAME]",
-        "refund_method": 2,
-        "refund_time": 1783765218466,
-        "trigger_refund_role": 4,
-        "payment_refund_type": "ORIGINAL",
-        "refund_fee": 899,
-        "trade_no": "U_FIXTURE",
-        "payment_type_name": "[NAME]"
-      },
-      "progress_name": "[NAME]",
       "gift_list": [],
-      "special_type": 0,
-      "progress_description": "退货ToB",
-      "progress_nodes": [
-        {
-          "state_name": "[NAME]",
-          "name": "[NAME]",
-          "description": "申请售后",
-          "is_current_node": false,
-          "extends_infos": {},
-          "to_b_comments": "",
-          "handle_suggestion_tob": "",
-          "sequence": 1,
-          "comments": "",
-          "is_default_node": true,
-          "arrived": true,
-          "arrive_at": "",
-          "status_description_tob": "",
-          "state_flag": 200
-        },
-        {
-          "to_b_comments": "请在{autoAuditDeadline}内完成审核，逾期未处理将自动同意退货退款",
-          "state_name": "[NAME]",
-          "name": "[NAME]",
-          "is_current_node": false,
-          "arrive_at": "",
-          "extends_infos": {
-            "autoAuditDeadline": "0"
-          },
-          "handle_suggestion_tob": "您可以根据实际情况评估是否可满足消费者诉求，为消费者带来更好的购物体验。评估过程中如有任何问题请及时跟消费者沟通。若商品不满足退货条件，建议您在拒绝售后前与消费者协商一致。\n",
-          "status_description_tob": "",
-          "sequence": 2,
-          "state_flag": 200,
-          "description": "",
-          "comments": "",
-          "is_default_node": true,
-          "arrived": true
-        },
-        {
-          "state_flag": 200,
-          "state_name": "[NAME]",
-          "name": "[NAME]",
-          "description": "等待买家寄回商品",
-          "comments": "逾期未处理将自动关闭退货退款申请",
-          "arrived": true,
-          "arrive_at": "2026-07-08 23:39:07",
-          "is_current_node": false,
-          "is_default_node": true,
-          "extends_infos": {
-            "fillExpressNoDeadline": "U_FIXTURE"
-          },
-          "to_b_comments": "已同意退货申请，买家需在{fillExpressNoDeadline}内寄回商品并填写物流信息，逾期未处理将关闭售后。",
-          "handle_suggestion_tob": "平台建议您保留拆包过程视频信息，如商品影响二次销售或少件，可作为凭证提供给平台。",
-          "status_description_tob": "",
-          "sequence": 3
-        },
-        {
-          "state_name": "[NAME]",
-          "name": "[NAME]",
-          "description": "买家已将退货寄回，待商家验货收货",
-          "is_default_node": true,
-          "arrive_at": "2026-07-09 19:55:19",
-          "to_b_comments": "商家需在{autoReceiveDeadline}内完成收货，逾期未处理将自动通过退款申请。",
-          "handle_suggestion_tob": "平台建议您保留拆包过程视频信息。若处理时间不够可使用延长处理时间。",
-          "sequence": 4,
-          "comments": "逾期未处理将自动同意退款",
-          "is_current_node": false,
-          "arrived": true,
-          "extends_infos": {
-            "autoReceiveDeadline": "U_FIXTURE"
-          },
-          "status_description_tob": "",
-          "state_flag": 200
-        },
-        {
-          "handle_suggestion_tob": "",
-          "status_description_tob": "",
-          "sequence": 5,
-          "name": "[NAME]",
-          "description": "退货退款退款成功",
-          "comments": "",
-          "is_current_node": true,
-          "is_default_node": true,
-          "arrived": true,
-          "arrive_at": "2026-07-11 18:20:17",
-          "state_flag": 200,
-          "state_name": "[NAME]",
-          "extends_infos": {
-            "damageCompensateAmount": "0.0",
-            "refundDeadline": "U_FIXTURE",
-            "finalRefundAmount": "899.0",
-            "expectedRefundAmount": "899.0"
-          },
-          "to_b_comments": "{expectedRefundAmount}元已退款成功至支付宝。"
-        }
-      ],
-      "finish_time": 1783765217879,
-      "express_sign_time": 0,
-      "express_sign_synced_time": 0,
-      "received_info": {
-        "received_role": 4,
-        "received_time": 1783765217879
-      },
       "proof_photos": [],
-      "audit_infos": {
-        "audit_deadline_duration_hours": 36,
-        "appealed": false,
-        "arbitrated": false,
-        "returns_id": "R_FIXTURE_2",
-        "audit_result": 200,
-        "audit_reason": -1,
-        "audit_description": "商家超时自动审核",
-        "audit_create_at": 1783395404000,
-        "audit_deadline": 1783525004000,
-        "audit_at": 1783525147000,
-        "audit_status": 15
-      },
+      "ticket_fill_time": 0,
       "action_logs": [
         {
-          "action_type": 5,
-          "from_status": 0,
-          "time": 1783395404343,
           "returns_id": "R_FIXTURE_2",
+          "action_type": 5,
           "request_from": 2,
-          "operator_id": "5efaa1a10000000001001487",
           "operator_name": "[NAME]",
-          "to_status": 1,
           "content": {
-            "hitFlashReturns": "{\"hitSevenDays\":false,\"hitSevenDaysMissReasons\":[5]}",
-            "pickUpReserveHourEnd": "21",
-            "expressType": "1",
-            "returnReasonId": "700020",
-            "showType": "negotiate",
-            "applyProofPhotos": "[]",
-            "pickUpReserveHourStart": "19",
-            "appliedAmountYuan": "917.00",
             "returnType": "1",
             "applyAfterSaleDesc": "",
+            "pickUpReserveHourEnd": "21",
+            "hitFlashReturns": "{\"hitSevenDays\":false,\"hitSevenDaysMissReasons\":[5]}",
+            "pickUpReserveHourStart": "19",
+            "hitSevenDays": "false",
+            "applyProofPhotos": "[]",
+            "expressType": "1",
+            "appliedAmountYuan": "917.00",
+            "showType": "negotiate",
             "hitSevenDaysMissReasons": "[5]",
-            "hitSevenDays": "false"
+            "returnReasonId": "700020"
           },
-          "description": "用户申请退货，退货原因“其他”"
+          "time": 1783395404343,
+          "description": "用户申请退货，退货原因“其他”",
+          "operator_id": "5efaa1a10000000001001487",
+          "from_status": 0,
+          "to_status": 1
         },
         {
           "from_status": 1,
           "to_status": 2,
-          "content": {
-            "autoAuditCategory": "2",
-            "rejectReasonId": "-1",
-            "receiverName": "[NAME]",
-            "receiverAddress": "[NAME]",
-            "returnType": "1",
-            "request": "{\"reason\":-1,\"setAuditDescription\":false,\"setAuditResult\":true,\"setRequestHeader\":true,\"receiverInfo\":{\"country\":\"中国大陆\",\"setCountry\":true,\"code\":\"CPartner\",\"setProvince\":true,\"setTown\":true,\"city\":\"西安市\",\"setShipNeeded\":false,\"sellerAddressRecordVersion\":3,\"receiverPhone\":\"13429852441\",\"province\":\"陕西省\",\"street\":\"陕西省西安市碑林区长安路街道中贸广场15号楼3单元2420\",\"toUserDescription\":\"\",\"setDistrict\":true,\"setSellerAddressRecordId\":true,\"setSellerAddressRecordVersion\":true,\"setToUserDescription\":true,\"setReceiverPhone\":true,\"address\":\"陕西省 西安市 碑林区 长安路街道 陕西省西安市碑林区长安路街道中贸广场15号楼3单元2420\",\"setAddress\":true,\"setStreet\":true,\"town\":\"长安路街道\",\"setCity\":true,\"receiverName\":\"东哥\",\"sellerAddressRecordId\":30435160,\"setCode\":true,\"shipNeeded\":0,\"setReceiverName\":true,\"district\":\"碑林区\",\"setPostcode\":false},\"ignoreWarning\":false,\"updateAt\":0,\"setAutoAudit\":true,\"setReceiverInfo\":true,\"auditResult\":200,\"setRejectInstruction\":false,\"setShipNeeded\":true,\"setAuditMessage\":false,\"proofPhotosSize\":0,\"setReason\":true,\"autoRefundDisabled\":false,\"setProofPhotos\":false,\"setAutoRefundDisabled\":false,\"rejectProofPhotosSize\":0,\"setAuditScene\":false,\"shipNeeded\":1,\"setRejectProofPhotos\":false,\"autoAuditCategory\":2,\"setIgnoreWarning\":false,\"autoAudit\":true,\"setReturnsId\":true,\"setUpdateAt\":false,\"requestHeader\":{\"setUserAccountNo\":false,\"operatorOrgId\":\"\",\"operatorOrgName\":\"TimeoutAuditTask\",\"setRequestFrom\":true,\"setOperatorId\":true,\"setOperatorOrgId\":true,\"setOperatorName\":true,\"operatorId\":\"\",\"operatorName\":\"TimeoutAuditTask\",\"setOperatorOrgName\":true,\"requestFrom\":104},\"returnsId\":\"R4931669195404211\",\"setAutoAuditCategory\":true}",
-            "receiverPhone": "138****0000",
-            "auditResult": "200",
-            "isSevenDaysNoReasonAutoAudit": "false"
-          },
-          "time": 1783525147354,
-          "action_type": 7,
-          "request_from": 104,
-          "operator_name": "[NAME]",
-          "description": "系统审核通过",
           "returns_id": "R_FIXTURE_3",
           "operator_org_id": "",
+          "operator_id": "",
+          "content": {
+            "autoAuditCategory": "2",
+            "returnType": "1",
+            "receiverName": "[NAME]",
+            "isSevenDaysNoReasonAutoAudit": "false",
+            "receiverAddress": "[NAME]",
+            "request": "[REDACTED_PAYLOAD]",
+            "receiverPhone": "138****0000",
+            "auditResult": "200",
+            "rejectReasonId": "-1"
+          },
+          "time": 1783525147354,
+          "description": "系统审核通过",
+          "action_type": 7,
+          "request_from": 104,
           "operator_org_name": "[NAME]",
-          "operator_id": ""
+          "operator_name": "[NAME]"
         },
         {
-          "action_type": 305,
+          "to_status": 2,
+          "content": {
+            "pickUpApplyEndTimeMills": "1783602000000",
+            "receiver": "[NAME]",
+            "sender": "[ADDRESS]",
+            "pickUpApplyStartTimeMills": "1783594800000"
+          },
           "time": 1783525147809,
-          "description": "",
-          "request_from": 19,
-          "operator_org_id": "CreatePickUpOrderOrderedEvent",
+          "returns_id": "R_FIXTURE_4",
           "operator_org_name": "[NAME]",
           "operator_id": "5efaa1a10000000001001487",
           "operator_name": "[NAME]",
-          "from_status": 2,
-          "to_status": 2,
-          "content": {
-            "receiver": "[NAME]",
-            "sender": "{\"address\":\"福建省莆田市秀屿区笏石镇公园湾一号\",\"idName\":\"\",\"idNumber\":\"\",\"level1\":\"福建省\",\"level2\":\"莆田市\",\"level3\":\"秀屿区\",\"level4\":\"笏石镇\",\"name\":\"陈晓雪\",\"phone\":\"17750343301\",\"street\":\"公园湾一号\",\"userId\":\"\",\"zoneCodes\":[\"350000\",\"350300\",\"350305\",\"350305100\"]}",
-            "pickUpApplyStartTimeMills": "U_FIXTURE",
-            "pickUpApplyEndTimeMills": "U_FIXTURE"
-          },
-          "returns_id": "R_FIXTURE_4"
-        },
-        {
-          "content": {
-            "pickUpCourierName": "[NAME]",
-            "pickUpCourierPhone": "138****0000",
-            "express_company_name": "[NAME]",
-            "pickUpApplyStartTimeMills": "U_FIXTURE",
-            "pickUpApplyEndTimeMills": "U_FIXTURE"
-          },
-          "time": 1783525152551,
-          "operator_id": "",
-          "operator_name": "[NAME]",
-          "to_status": 2,
           "description": "",
-          "returns_id": "R_FIXTURE_5",
-          "action_type": 350,
+          "action_type": 305,
           "request_from": 19,
-          "operator_org_id": "",
-          "operator_org_name": "[NAME]",
+          "operator_org_id": "CreatePickUpOrderOrderedEvent",
           "from_status": 2
         },
         {
+          "action_type": 350,
+          "operator_org_id": "",
+          "operator_id": "",
+          "operator_name": "[NAME]",
+          "to_status": 2,
+          "content": {
+            "pickUpApplyStartTimeMills": "1783594800000",
+            "pickUpApplyEndTimeMills": "1783602000000",
+            "pickUpCourierName": "[NAME]",
+            "pickUpCourierPhone": "138****0000",
+            "express_company_name": "[NAME]"
+          },
+          "time": 1783525152551,
+          "returns_id": "R_FIXTURE_5",
+          "request_from": 19,
+          "operator_org_name": "[NAME]",
+          "from_status": 2,
+          "description": ""
+        },
+        {
+          "operator_name": "[NAME]",
+          "content": {
+            "pickUpApplyStartTimeMills": "1783594800000",
+            "pickUpApplyEndTimeMills": "1783602000000",
+            "pickUpCourierName": "[NAME]",
+            "pickUpCourierPhone": "138****0000",
+            "express_company_name": "[NAME]"
+          },
+          "time": 1783551218882,
+          "description": "",
           "returns_id": "R_FIXTURE_6",
           "operator_org_id": "",
-          "operator_name": "[NAME]",
+          "operator_id": "",
+          "from_status": 2,
+          "to_status": 2,
+          "action_type": 350,
+          "request_from": 19,
+          "operator_org_name": "[NAME]"
+        },
+        {
+          "operator_id": "",
           "from_status": 2,
           "to_status": 2,
           "content": {
-            "pickUpApplyEndTimeMills": "U_FIXTURE",
+            "pickUpApplyStartTimeMills": "1783594800000",
+            "pickUpApplyEndTimeMills": "1783602000000",
             "pickUpCourierName": "[NAME]",
             "pickUpCourierPhone": "138****0000",
-            "express_company_name": "[NAME]",
-            "pickUpApplyStartTimeMills": "U_FIXTURE"
+            "express_company_name": "[NAME]"
           },
-          "description": "",
-          "action_type": 350,
           "request_from": 19,
-          "operator_org_name": "[NAME]",
-          "operator_id": "",
-          "time": 1783551218882
-        },
-        {
-          "returns_id": "R_FIXTURE_7",
-          "request_from": 19,
-          "operator_org_id": "",
-          "operator_org_name": "[NAME]",
-          "operator_id": "",
-          "from_status": 2,
+          "operator_name": "[NAME]",
           "time": 1783555133524,
           "description": "",
+          "returns_id": "R_FIXTURE_7",
           "action_type": 350,
-          "operator_name": "[NAME]",
-          "to_status": 2,
-          "content": {
-            "pickUpCourierName": "[NAME]",
-            "pickUpCourierPhone": "138****0000",
-            "express_company_name": "[NAME]",
-            "pickUpApplyStartTimeMills": "U_FIXTURE",
-            "pickUpApplyEndTimeMills": "U_FIXTURE"
-          }
+          "operator_org_id": "",
+          "operator_org_name": "[NAME]"
         },
         {
-          "description": "系统填写上门取件物流单号“顺丰速运 - SF5116136791688”",
-          "action_type": 15,
-          "request_from": 21,
-          "operator_org_id": "bizplms",
-          "operator_id": "bizplms",
-          "operator_name": "[NAME]",
-          "returns_id": "R_FIXTURE_8",
-          "operator_org_name": "[NAME]",
-          "from_status": 2,
           "to_status": 3,
           "content": {
-            "express_no": "SF_FIXTURE_008",
-            "use_fast_refund": "false",
-            "express_company_code": "shunfeng",
             "express_company": "顺丰速运",
             "returnType": "1",
             "pickup_no": "PO78352514750689223",
             "express_fee": "10.0",
-            "express_company_name": "[NAME]"
+            "express_company_name": "[NAME]",
+            "express_no": "SF_FIXTURE_008",
+            "use_fast_refund": "false",
+            "express_company_code": "shunfeng"
           },
-          "time": 1783598119329
+          "returns_id": "R_FIXTURE_8",
+          "operator_id": "bizplms",
+          "time": 1783598119329,
+          "description": "[ADDRESS]",
+          "action_type": 15,
+          "request_from": 21,
+          "operator_org_id": "bizplms",
+          "operator_org_name": "[NAME]",
+          "operator_name": "[NAME]",
+          "from_status": 2
         },
         {
-          "content": {
-            "deadline": "U_FIXTURE",
-            "days": "2"
-          },
-          "action_type": 16,
-          "operator_org_id": "plms_tracking",
-          "operator_org_name": "[NAME]",
-          "operator_id": "signed_time",
-          "time": 1783760594653,
-          "description": "",
-          "returns_id": "R_FIXTURE_9",
           "request_from": 4,
+          "operator_org_id": "plms_tracking",
+          "operator_id": "signed_time",
           "operator_name": "[NAME]",
           "from_status": 3,
-          "to_status": 3
+          "to_status": 3,
+          "time": 1783760594653,
+          "returns_id": "R_FIXTURE_9",
+          "operator_org_name": "[NAME]",
+          "content": {
+            "days": "2",
+            "deadline": "1783962194626"
+          },
+          "description": "",
+          "action_type": 16
         },
         {
-          "returns_id": "R_FIXTURE_10",
           "action_type": 18,
-          "request_from": 4,
           "operator_org_id": "plms_tracking",
           "operator_id": "signed_time",
+          "to_status": 3,
+          "time": 1783760594708,
+          "description": "退回物流轨迹签收",
+          "returns_id": "R_FIXTURE_10",
+          "request_from": 4,
+          "operator_org_name": "[NAME]",
+          "operator_name": "[NAME]",
           "from_status": 3,
           "content": {
             "signed_time": "2026-07-11 17:03:06"
-          },
-          "time": 1783760594708,
-          "operator_org_name": "[NAME]",
-          "operator_name": "[NAME]",
-          "to_status": 3,
-          "description": "退回物流轨迹签收"
-        },
-        {
-          "content": {
-            "oldAppliedAmount": "917.0",
-            "newAppliedAmount": "899.0"
-          },
-          "time": 1783765217815,
-          "returns_id": "R_FIXTURE_11",
-          "request_from": 4,
-          "operator_org_id": "NEGOTIATE",
-          "from_status": 3,
-          "description": "",
-          "action_type": 618,
-          "operator_id": "5efaa1a10000000001001487",
-          "to_status": 3
-        },
-        {
-          "description": "系统确认收货",
-          "returns_id": "R_FIXTURE_12",
-          "operator_org_id": "NEGOTIATE",
-          "from_status": 3,
-          "time": 1783765217879,
-          "action_type": 20,
-          "request_from": 4,
-          "operator_id": "5efaa1a10000000001001487",
-          "to_status": 4,
-          "content": {
-            "returnType": "1",
-            "is_force": "false",
-            "returnReceivedType": "2",
-            "returned_items_log": "[{\"returned_count\":\"1\",\"intact_degree\":\"0\",\"item_id\":\"6a46274e98d31b00153c12a0\",\"return_price\":\"0.0\"}]"
           }
         },
         {
+          "description": "",
+          "returns_id": "R_FIXTURE_11",
+          "operator_org_id": "NEGOTIATE",
+          "operator_id": "5efaa1a10000000001001487",
+          "action_type": 618,
+          "request_from": 4,
+          "from_status": 3,
+          "to_status": 3,
+          "content": {
+            "newAppliedAmount": "899.0",
+            "oldAppliedAmount": "917.0"
+          },
+          "time": 1783765217815
+        },
+        {
+          "operator_org_id": "NEGOTIATE",
+          "operator_id": "5efaa1a10000000001001487",
+          "to_status": 4,
+          "content": {
+            "is_force": "false",
+            "returnReceivedType": "2",
+            "returned_items_log": "[{\"returned_count\":\"1\",\"intact_degree\":\"0\",\"item_id\":\"6a46274e98d31b00153c12a0\",\"return_price\":\"0.0\"}]",
+            "returnType": "1"
+          },
+          "time": 1783765217879,
+          "description": "系统确认收货",
+          "action_type": 20,
+          "from_status": 3,
+          "returns_id": "R_FIXTURE_12",
+          "request_from": 4
+        },
+        {
+          "operator_org_id": "NEGOTIATE",
           "content": {
             "refundFee": "899.0",
             "returnType": "1"
           },
-          "description": "",
-          "returns_id": "R_FIXTURE_13",
-          "request_from": 4,
-          "operator_id": "5efaa1a10000000001001487",
-          "to_status": 4,
           "time": 1783765217896,
+          "description": "",
           "action_type": 504,
-          "operator_org_id": "NEGOTIATE",
-          "from_status": 3
+          "operator_id": "5efaa1a10000000001001487",
+          "from_status": 3,
+          "to_status": 4,
+          "returns_id": "R_FIXTURE_13",
+          "request_from": 4
         },
         {
-          "request_from": 4,
-          "operator_org_id": "6a195ac98228a600152aa204",
+          "returns_id": "R_FIXTURE_14",
           "operator_id": "5efaa1a10000000001001487",
           "from_status": 4,
-          "returns_id": "R_FIXTURE_14",
-          "action_type": 25,
           "content": {
             "refund_id": "449a29a083e6472e89d63ad5fd0f7bac"
           },
           "time": 1783765218466,
+          "action_type": 25,
+          "request_from": 4,
+          "operator_org_id": "6a195ac98228a600152aa204",
           "description": "已触发退款"
         },
         {
-          "action_type": 400,
+          "returns_id": "R_FIXTURE_15",
           "operator_org_name": "[NAME]",
           "operator_id": "",
-          "operator_name": "[NAME]",
+          "from_status": 4,
           "content": {
             "refundAllowanceSuccess": "true",
             "itemList": "[{\"appliedAmount\":179800.0,\"appliedCount\":0,\"appliedCrossBorderExportSaleSkuTaxAmountCurrency\":0,\"appliedCrossBorderExportShipFeeAmount\":0,\"appliedCrossBorderExportShipFeeAmountCurrency\":0,\"appliedCrossBorderExportSkuSaleTariffAmountCurrency\":0,\"appliedDepositAmount\":0.0,\"appliedPaidAmount\":179800.0,\"appliedShipFeeAmount\":1800.0,\"appliedShipFeeAmountCurrency\":0,\"appliedTotalAmountCurrency\":0,\"boughtCount\":1,\"exchangedCount\":0,\"frozenAmountList\":[],\"hasExchange\":false,\"itemId\":\"6a46274e98d31b00153c12a0\",\"itemName\":\"58圈口\",\"totalDepositAmount\":0,\"totalPaidAmount\":89900,\"totalPrice\":0,\"totalReturnPrice\":0}]"
           },
-          "time": 1783765218557,
-          "description": "已触发退津贴",
+          "action_type": 400,
           "request_from": 4,
           "operator_org_id": "",
-          "from_status": 4,
-          "returns_id": "R_FIXTURE_15"
+          "operator_name": "[NAME]",
+          "time": 1783765218557,
+          "description": "已触发退津贴"
         },
         {
-          "returns_id": "R_FIXTURE_16",
-          "operator_org_name": "[NAME]",
-          "operator_id": "",
+          "operator_name": "[NAME]",
+          "from_status": 4,
           "content": {
-            "tradeNo": "U_FIXTURE",
-            "skuAfterSaleType": "normal",
             "refundId": "449a29a083e6472e89d63ad5fd0f7bac",
             "finishAt": "2026-07-11 18:20:19",
             "paymentType": "2",
             "paymentRefundType": "ORIGINAL",
             "refundFee": "899.0",
-            "refundType": "6"
+            "refundType": "6",
+            "tradeNo": "2026070223001452681415542724",
+            "skuAfterSaleType": "normal"
           },
           "time": 1783765220116,
+          "description": "",
+          "returns_id": "R_FIXTURE_16",
           "action_type": 251,
           "request_from": 4,
           "operator_org_id": "",
-          "operator_name": "[NAME]",
-          "from_status": 4,
-          "description": ""
+          "operator_org_name": "[NAME]",
+          "operator_id": ""
         }
       ],
-      "show_progress_bar": true,
-      "pickup_order_info": {
-        "order": {
-          "pickup_code": "7752",
-          "company_code": "shunfeng",
-          "person_name": "[NAME]",
-          "person_code": "42608456",
-          "weight": 1,
-          "update_courier_time": "2026-07-08 23:39:12",
-          "pickup_time_end": "2026-07-09 21:00:00",
-          "express_no": "SF_FIXTURE_002",
-          "status": 6,
-          "status_desc": "已签收",
-          "solicitation_time": "2026-07-09 19:39:29",
-          "type": 1,
-          "type_desc": "上门取件",
-          "extend_fields": {
-            "retrieve_status": 0,
-            "is_standard": "1",
-            "original_pickup_start_date": "2026-07-09 19:00:00",
-            "original_pickup_end_date": "2026-07-09 21:00:00"
-          },
-          "company_order_no": "PO78352514750689223",
-          "pickup_time_start": "2026-07-09 19:00:00",
-          "company_name": "[NAME]",
-          "person_tel": "U_FIXTURE",
-          "receiver": {
-            "address": "[ADDRESS]",
-            "name": "[NAME]",
-            "phone": "138****0000",
-            "level4": "长安路街道",
-            "level1": "陕西省",
-            "level2": "西安市",
-            "level3": "碑林区",
-            "street": "陕西省西安市碑林区长安路街道中贸广场15号楼3单元2420"
-          },
-          "sign_time": "2026-07-11 15:26:04",
-          "user_id": "5efaa1a10000000001001487",
-          "user_tips": "",
-          "order_no": "PO78352514750689223",
-          "create_at": 1783525147000,
-          "sender": {
-            "address": "[ADDRESS]",
-            "name": "[NAME]",
-            "phone": "138****0000",
-            "level4": "笏石镇",
-            "level1": "福建省",
-            "level2": "莆田市",
-            "level3": "秀屿区",
-            "street": "公园湾一号"
-          },
-          "pickup_time": "2026-07-09 19:35:46",
-          "company_platform": "shunfeng"
-        },
-        "fee": {
-          "order_no": "PO78352514750689223",
-          "pay_status": 1,
-          "user_fee": 1000,
-          "create_at": "2026-07-09 19:39:29",
-          "first_part_weight": 1,
-          "follow_part_weight_unit": 1,
-          "delivery_fee": 1000,
-          "pay_status_desc": "已支付",
-          "pay_time": "2026-07-09 19:55:19",
-          "first_weight_fee": 1000,
-          "decrease_type": "",
-          "first_part_price": 1000,
-          "bill_no": "PF78359716984531108",
-          "company_platform": "shunfeng",
-          "weight": 1,
-          "insurance_reduce_fee": 0,
-          "second_weight_fee": 0,
-          "decrease_fee": 0,
-          "platform_reduce_fee": 0,
-          "follow_part_price_unit": 400
-        },
-        "bind_list": [
-          "R4931669195404211"
-        ],
-        "business_no": "R_FIXTURE_2"
+      "progress_name": "[NAME]",
+      "express_fill_time": 1783598119329,
+      "express_sign_time": 0,
+      "express_sign_synced_time": 0,
+      "audit_infos": {
+        "returns_id": "R_FIXTURE_2",
+        "audit_status": 15,
+        "audit_result": 200,
+        "audit_description": "商家超时自动审核",
+        "audit_create_at": 1783395404000,
+        "audit_deadline_duration_hours": 36,
+        "audit_at": 1783525147000,
+        "appealed": false,
+        "audit_reason": -1,
+        "audit_deadline": 1783525004000,
+        "arbitrated": false
       },
+      "progress_description": "退货ToB",
       "negotiate_nodes": [
         {
+          "time": "2026-07-11 18:20:20",
+          "time_long": 1783765220116,
+          "negotiate_node_type": 19,
+          "title": "退款成功",
+          "operator_role_name": "[NAME]",
           "operator_role": 4,
           "negotiate_node_attributes": [
             {
-              "desc": "¥899.00",
               "negotiate_node_attribute_type": 0,
-              "key": "退款金额"
+              "key": "退款金额",
+              "desc": "¥899.00"
             },
             {
               "negotiate_node_attribute_type": 0,
               "key": "流水号",
-              "desc": "U_FIXTURE"
+              "desc": "2026070223001452681415542724"
             },
             {
               "negotiate_node_attribute_type": 0,
@@ -800,29 +613,26 @@
               "key": "退款时间",
               "desc": "2026-07-11 18:20:19"
             }
-          ],
-          "time": "2026-07-11 18:20:20",
-          "time_long": 1783765220116,
-          "negotiate_node_type": 19,
-          "title": "退款成功",
-          "operator_role_name": "[NAME]"
+          ]
         },
         {
+          "operator_role": 4,
+          "negotiate_node_attributes": [
+            {
+              "negotiate_node_attribute_type": 0,
+              "key": "退款金额",
+              "desc": "¥899.00"
+            }
+          ],
           "time": "2026-07-11 18:20:17",
           "time_long": 1783765217896,
           "negotiate_node_type": 18,
           "title": "售后完成",
-          "operator_role_name": "[NAME]",
-          "operator_role": 4,
-          "negotiate_node_attributes": [
-            {
-              "desc": "¥899.00",
-              "negotiate_node_attribute_type": 0,
-              "key": "退款金额"
-            }
-          ]
+          "operator_role_name": "[NAME]"
         },
         {
+          "time": "2026-07-11 18:20:17",
+          "time_long": 1783765217627,
           "negotiate_node_type": 100004,
           "title": "同意协商",
           "operator_role_name": "[NAME]",
@@ -833,9 +643,7 @@
               "key": "协商场景",
               "desc": "收货后修改退款金额"
             }
-          ],
-          "time": "2026-07-11 18:20:17",
-          "time_long": 1783765217627
+          ]
         },
         {
           "negotiate_node_type": 100001,
@@ -859,14 +667,14 @@
               "desc": "其他（未修改）"
             },
             {
-              "negotiate_node_attribute_type": 0,
               "key": "退款金额",
-              "desc": "¥899.00 （原：¥917.00）"
+              "desc": "¥899.00 （原：¥917.00）",
+              "negotiate_node_attribute_type": 0
             },
             {
+              "negotiate_node_attribute_type": 0,
               "key": "协商超时后自动拒绝",
-              "desc": "未开启",
-              "negotiate_node_attribute_type": 0
+              "desc": "未开启"
             },
             {
               "negotiate_node_attribute_type": 1,
@@ -883,6 +691,9 @@
           "time_long": 1783765161838
         },
         {
+          "negotiate_node_type": 13,
+          "title": "退货商品已发出，待商家确认收货",
+          "operator_role_name": "[NAME]",
           "operator_role": 4,
           "negotiate_node_attributes": [
             {
@@ -891,60 +702,35 @@
               "desc": "SF_FIXTURE_006"
             },
             {
-              "desc": "顺丰速运",
               "negotiate_node_attribute_type": 0,
-              "key": "物流公司"
+              "key": "物流公司",
+              "desc": "顺丰速运"
             }
           ],
           "time": "2026-07-09 19:55:19",
-          "time_long": 1783598119329,
-          "negotiate_node_type": 13,
-          "title": "退货商品已发出，待商家确认收货",
-          "operator_role_name": "[NAME]"
+          "time_long": 1783598119329
         },
         {
-          "title": "分配快递员",
-          "operator_role_name": "[NAME]",
-          "operator_role": 4,
-          "negotiate_node_attributes": [
-            {
-              "desc": "顺丰速运",
-              "negotiate_node_attribute_type": 0,
-              "key": "物流公司"
-            },
-            {
-              "key": "快递员信息",
-              "desc": "翁少兵 15060308317",
-              "negotiate_node_attribute_type": 0
-            }
-          ],
-          "time": "2026-07-09 07:58:53",
-          "time_long": 1783555133524,
-          "negotiate_node_type": 25
-        },
-        {
-          "time": "2026-07-09 06:53:38",
-          "time_long": 1783551218882,
           "negotiate_node_type": 25,
           "title": "分配快递员",
           "operator_role_name": "[NAME]",
           "operator_role": 4,
           "negotiate_node_attributes": [
             {
+              "negotiate_node_attribute_type": 0,
               "key": "物流公司",
-              "desc": "顺丰速运",
-              "negotiate_node_attribute_type": 0
+              "desc": "顺丰速运"
             },
             {
               "negotiate_node_attribute_type": 0,
               "key": "快递员信息",
-              "desc": "苏世海 18959425083"
+              "desc": "翁少兵 15060308317"
             }
-          ]
+          ],
+          "time": "2026-07-09 07:58:53",
+          "time_long": 1783555133524
         },
         {
-          "time": "2026-07-08 23:39:12",
-          "time_long": 1783525152551,
           "negotiate_node_type": 25,
           "title": "分配快递员",
           "operator_role_name": "[NAME]",
@@ -960,27 +746,49 @@
               "key": "快递员信息",
               "desc": "苏世海 18959425083"
             }
-          ]
+          ],
+          "time": "2026-07-09 06:53:38",
+          "time_long": 1783551218882
         },
         {
-          "time": "2026-07-08 23:39:07",
-          "time_long": 1783525147809,
+          "title": "分配快递员",
+          "operator_role_name": "[NAME]",
+          "operator_role": 4,
+          "negotiate_node_attributes": [
+            {
+              "negotiate_node_attribute_type": 0,
+              "key": "物流公司",
+              "desc": "顺丰速运"
+            },
+            {
+              "negotiate_node_attribute_type": 0,
+              "key": "快递员信息",
+              "desc": "苏世海 18959425083"
+            }
+          ],
+          "time": "2026-07-08 23:39:12",
+          "time_long": 1783525152551,
+          "negotiate_node_type": 25
+        },
+        {
           "negotiate_node_type": 11,
           "title": "成功预约上门取件",
           "operator_role_name": "[NAME]",
           "operator_role": 4,
           "negotiate_node_attributes": [
             {
-              "negotiate_node_attribute_type": 0,
               "key": "预约上门时间",
-              "desc": "07月09日 19:00-21:00"
+              "desc": "07月09日 19:00-21:00",
+              "negotiate_node_attribute_type": 0
             },
             {
               "negotiate_node_attribute_type": 0,
               "key": "寄件地址",
-              "desc": "福建省莆田市秀屿区笏石镇公园湾一号"
+              "desc": "[ADDRESS]"
             }
-          ]
+          ],
+          "time": "2026-07-08 23:39:07",
+          "time_long": 1783525147809
         },
         {
           "negotiate_node_type": 5,
@@ -1001,33 +809,32 @@
             {
               "negotiate_node_attribute_type": 0,
               "key": "联系电话",
-              "desc": "U_FIXTURE"
+              "desc": "138****0000"
             },
             {
               "negotiate_node_attribute_type": 0,
               "key": "地址",
-              "desc": "陕西省 西安市 碑林区 长安路街道 陕西省西安市碑林区长安路街道中贸广场15号楼3单元2420"
+              "desc": "[REDACTED_PAYLOAD]"
             },
             {
-              "negotiate_node_attribute_type": 0,
               "key": "商家说明",
-              "desc": "无"
+              "desc": "无",
+              "negotiate_node_attribute_type": 0
             }
           ],
           "time": "2026-07-08 23:39:07",
           "time_long": 1783525147354
         },
         {
+          "title": "买家催促售后处理",
+          "operator_role_name": "[NAME]",
           "operator_role": 2,
           "negotiate_node_attributes": [],
           "time": "2026-07-07 16:43:11",
           "time_long": 1783413791824,
-          "negotiate_node_type": 200006,
-          "title": "买家催促售后处理",
-          "operator_role_name": "[NAME]"
+          "negotiate_node_type": 200006
         },
         {
-          "operator_role_name": "[NAME]",
           "operator_role": 2,
           "negotiate_node_attributes": [
             {
@@ -1036,14 +843,14 @@
               "desc": "退货退款"
             },
             {
-              "desc": "其他",
               "negotiate_node_attribute_type": 0,
-              "key": "售后原因"
+              "key": "售后原因",
+              "desc": "其他"
             },
             {
-              "negotiate_node_attribute_type": 0,
               "key": "申请退款金额",
-              "desc": "¥917.00"
+              "desc": "¥917.00",
+              "negotiate_node_attribute_type": 0
             },
             {
               "negotiate_node_attribute_type": 0,
@@ -1051,10 +858,10 @@
               "desc": "无"
             },
             {
+              "negotiate_node_attribute_type": 1,
               "key": "售后凭证",
               "desc": "无",
-              "photos": [],
-              "negotiate_node_attribute_type": 1
+              "photos": []
             },
             {
               "negotiate_node_attribute_type": 0,
@@ -1065,13 +872,206 @@
           "time": "2026-07-07 11:36:44",
           "time_long": 1783395404343,
           "negotiate_node_type": 1,
-          "title": "发起售后申请"
+          "title": "发起售后申请",
+          "operator_role_name": "[NAME]"
         }
       ],
       "fast_refund_recover_fee_amount_yuan": 0,
-      "express_fill_time": 1783598119329,
-      "ticket_fill_time": 0,
-      "confirm_recipient": ""
+      "confirm_recipient": "[NAME]",
+      "confirm_receive_time": 1783765217879,
+      "received_info": {
+        "received_role": 4,
+        "received_time": 1783765217879
+      },
+      "special_type": 0,
+      "show_progress_bar": true,
+      "progress_nodes": [
+        {
+          "state_name": "[NAME]",
+          "comments": "",
+          "extends_infos": {},
+          "to_b_comments": "",
+          "handle_suggestion_tob": "",
+          "sequence": 1,
+          "name": "[NAME]",
+          "description": "申请售后",
+          "is_current_node": false,
+          "is_default_node": true,
+          "arrived": true,
+          "arrive_at": "",
+          "status_description_tob": "",
+          "state_flag": 200
+        },
+        {
+          "handle_suggestion_tob": "您可以根据实际情况评估是否可满足消费者诉求，为消费者带来更好的购物体验。评估过程中如有任何问题请及时跟消费者沟通。若商品不满足退货条件，建议您在拒绝售后前与消费者协商一致。\n",
+          "status_description_tob": "",
+          "sequence": 2,
+          "state_name": "[NAME]",
+          "name": "[NAME]",
+          "comments": "",
+          "is_current_node": false,
+          "is_default_node": true,
+          "extends_infos": {
+            "autoAuditDeadline": "0"
+          },
+          "to_b_comments": "请在{autoAuditDeadline}内完成审核，逾期未处理将自动同意退货退款",
+          "state_flag": 200,
+          "description": "",
+          "arrived": true,
+          "arrive_at": ""
+        },
+        {
+          "state_flag": 200,
+          "name": "[NAME]",
+          "comments": "逾期未处理将自动关闭退货退款申请",
+          "is_current_node": false,
+          "is_default_node": true,
+          "arrived": true,
+          "extends_infos": {
+            "fillExpressNoDeadline": "1784129948000"
+          },
+          "handle_suggestion_tob": "平台建议您保留拆包过程视频信息，如商品影响二次销售或少件，可作为凭证提供给平台。",
+          "sequence": 3,
+          "state_name": "[NAME]",
+          "description": "等待买家寄回商品",
+          "arrive_at": "2026-07-08 23:39:07",
+          "to_b_comments": "已同意退货申请，买家需在{fillExpressNoDeadline}内寄回商品并填写物流信息，逾期未处理将关闭售后。",
+          "status_description_tob": ""
+        },
+        {
+          "arrived": true,
+          "arrive_at": "2026-07-09 19:55:19",
+          "extends_infos": {
+            "autoReceiveDeadline": "1783933395000"
+          },
+          "to_b_comments": "商家需在{autoReceiveDeadline}内完成收货，逾期未处理将自动通过退款申请。",
+          "handle_suggestion_tob": "平台建议您保留拆包过程视频信息。若处理时间不够可使用延长处理时间。",
+          "sequence": 4,
+          "state_flag": 200,
+          "state_name": "[NAME]",
+          "name": "[NAME]",
+          "is_current_node": false,
+          "status_description_tob": "",
+          "description": "买家已将退货寄回，待商家验货收货",
+          "comments": "逾期未处理将自动同意退款",
+          "is_default_node": true
+        },
+        {
+          "arrived": true,
+          "extends_infos": {
+            "finalRefundAmount": "899.0",
+            "expectedRefundAmount": "899.0",
+            "damageCompensateAmount": "0.0",
+            "refundDeadline": "1783851618000"
+          },
+          "to_b_comments": "{expectedRefundAmount}元已退款成功至支付宝。",
+          "state_flag": 200,
+          "name": "[NAME]",
+          "comments": "",
+          "arrive_at": "2026-07-11 18:20:17",
+          "handle_suggestion_tob": "",
+          "status_description_tob": "",
+          "sequence": 5,
+          "state_name": "[NAME]",
+          "description": "退货退款退款成功",
+          "is_current_node": true,
+          "is_default_node": true
+        }
+      ],
+      "pickup_order_info": {
+        "bind_list": [
+          "R_FIXTURE_2"
+        ],
+        "business_no": "R_FIXTURE_2",
+        "order": {
+          "person_name": "[NAME]",
+          "person_code": "42608456",
+          "status": 6,
+          "sender": {
+            "level3": "秀屿区",
+            "street": "[REDACTED_PAYLOAD]",
+            "address": "[REDACTED_PAYLOAD]",
+            "name": "[NAME]",
+            "phone": "138****0000",
+            "level4": "笏石镇",
+            "level1": "福建省",
+            "level2": "莆田市"
+          },
+          "sign_time": "2026-07-11 15:26:04",
+          "company_platform": "shunfeng",
+          "pickup_time_end": "2026-07-09 21:00:00",
+          "create_at": 1783525147000,
+          "receiver": {
+            "level1": "陕西省",
+            "level2": "西安市",
+            "level3": "碑林区",
+            "street": "[REDACTED_PAYLOAD]",
+            "address": "[REDACTED_PAYLOAD]",
+            "name": "[NAME]",
+            "phone": "138****0000",
+            "level4": "[REDACTED_PAYLOAD]"
+          },
+          "status_desc": "已签收",
+          "update_courier_time": "2026-07-08 23:39:12",
+          "type": 1,
+          "extend_fields": {
+            "retrieve_status": 0,
+            "is_standard": "1",
+            "original_pickup_start_date": "2026-07-09 19:00:00",
+            "original_pickup_end_date": "2026-07-09 21:00:00"
+          },
+          "order_no": "PO78352514750689223",
+          "solicitation_time": "2026-07-09 19:39:29",
+          "pickup_time": "2026-07-09 19:35:46",
+          "user_tips": "",
+          "company_order_no": "PO78352514750689223",
+          "express_no": "SF_FIXTURE_002",
+          "company_code": "shunfeng",
+          "person_tel": "138****0000",
+          "weight": 1,
+          "type_desc": "上门取件",
+          "user_id": "5efaa1a10000000001001487",
+          "pickup_time_start": "2026-07-09 19:00:00",
+          "pickup_code": "7752",
+          "company_name": "[NAME]"
+        },
+        "fee": {
+          "bill_no": "PF78359716984531108",
+          "order_no": "PO78352514750689223",
+          "user_fee": 1000,
+          "delivery_fee": 1000,
+          "decrease_fee": 0,
+          "create_at": "2026-07-09 19:39:29",
+          "first_weight_fee": 1000,
+          "second_weight_fee": 0,
+          "company_platform": "shunfeng",
+          "weight": 1,
+          "insurance_reduce_fee": 0,
+          "follow_part_weight_unit": 1,
+          "platform_reduce_fee": 0,
+          "decrease_type": "",
+          "first_part_weight": 1,
+          "first_part_price": 1000,
+          "follow_part_price_unit": 400,
+          "pay_status": 1,
+          "pay_status_desc": "已支付",
+          "pay_time": "2026-07-09 19:55:19"
+        }
+      },
+      "refund_info": {
+        "refund_time": 1783765218466,
+        "payment_refund_type": "ORIGINAL",
+        "refund_status_name": "[NAME]",
+        "trade_no": "2026070223001452681415542724",
+        "trigger_refund_role": 4,
+        "refund_operator_role": 4,
+        "payment_type": 2,
+        "refund_status": 2,
+        "refund_fee": 899,
+        "payment_type_name": "[NAME]",
+        "refund_method": 2
+      },
+      "finish_time": 1783765217879
     }
   }
 }

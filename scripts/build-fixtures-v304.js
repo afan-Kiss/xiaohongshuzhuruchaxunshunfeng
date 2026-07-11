@@ -18,22 +18,28 @@ const SAMPLES = [
 ];
 
 function redact(obj, seq = 1, depth = 0) {
-  if (obj == null || depth > 14) return obj;
+  if (obj == null || depth > 20) return obj;
   if (Array.isArray(obj)) return obj.map((x, i) => redact(x, seq + i, depth + 1));
+  if (typeof obj === 'string') {
+    let s = obj;
+    if (/^P\d{10,}$/.test(s)) return `P_FIXTURE_${seq}`;
+    if (/^R\d{10,}$/.test(s)) return `R_FIXTURE_${seq}`;
+    if (/^SF\d{10,}$/i.test(s)) return `SF_FIXTURE_${String(seq).padStart(3, '0')}`;
+    if (/^1\d{10}$/.test(s)) return '138****0000';
+    if (/(receiverPhone|receiverName|中贸广场|长安路街道)/.test(s)) return '[REDACTED_PAYLOAD]';
+    if (/(省|市|区|县|街道|路|号|广场)/.test(s) && s.length > 8) return '[ADDRESS]';
+    return s;
+  }
   if (typeof obj !== 'object') return obj;
   const out = {};
   for (const [k, v] of Object.entries(obj)) {
     const lk = k.toLowerCase();
     if (typeof v === 'string') {
-      if (/cookie|token/i.test(lk)) out[k] = '[REDACTED]';
-      else if (/phone|mobile/.test(lk)) out[k] = '138****0000';
-      else if (/name|nick|receiver|user_name|seller_name/.test(lk)) out[k] = '[NAME]';
-      else if (/address/.test(lk)) out[k] = '[ADDRESS]';
-      else if (/^P\d{10,}$/.test(v)) out[k] = `P_FIXTURE_${seq}`;
-      else if (/^R\d{10,}$/.test(v)) out[k] = `R_FIXTURE_${seq}`;
-      else if (/^SF\d{10,}$/i.test(v)) out[k] = `SF_FIXTURE_${String(seq).padStart(3, '0')}`;
-      else if (/^\d{11,}$/.test(v)) out[k] = 'U_FIXTURE';
-      else out[k] = v;
+      if (/cookie|token|authorization/i.test(lk)) out[k] = '[REDACTED]';
+      else if (/phone|mobile|tel/.test(lk)) out[k] = '138****0000';
+      else if (/name|nick|receiver|recipient|user_name|seller_name/.test(lk)) out[k] = '[NAME]';
+      else if (/address|addr|street|detail|request|response/.test(lk)) out[k] = '[REDACTED_PAYLOAD]';
+      else out[k] = redact(v, seq, depth + 1);
     } else {
       out[k] = redact(v, seq, depth + 1);
     }
