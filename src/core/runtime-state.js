@@ -1,4 +1,4 @@
-const VERSION = '3.0.5';
+const VERSION = '3.0.6';
 const SERVICE = 'qf-sf-data-core';
 
 const VERIFICATION_TTL_MS = 10_000;

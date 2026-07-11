@@ -115,98 +115,60 @@ function loadManualCookiesMap() {
 
 
 
-async function fetchCookieFromAnalyst(shopKey) {
-
+async function fetchCookieFromAnalyst(shopKey, signal) {
   const bases = [
-
     String(process.env.QIANFAN_ANALYST_COOKIE_BASE_URL || 'http://127.0.0.1:4723').replace(/\/$/, ''),
-
     'http://127.0.0.1:4790',
-
   ];
-
   for (const base of bases) {
-
     const url = `${base}/api/shop-cookies/plain?shopKey=${encodeURIComponent(shopKey)}`;
-
     try {
-
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-
+      const res = await fetch(url, {
+        signal: signal || AbortSignal.timeout(8000),
+      });
       const json = await res.json().catch(() => ({}));
-
       const payload = json?.data || json;
-
       const cookie = String(payload?.cookie || '').trim();
-
       if (res.ok && cookie.length >= 80) return cookie;
-
-    } catch {
-
+    } catch (err) {
+      if (signal?.aborted || err?.name === 'AbortError') throw err;
       /* try next */
-
     }
-
   }
-
   return '';
-
 }
 
-
-
 async function getShopCookie(shopKey, options = {}) {
-
   const key = String(shopKey || '').trim();
-
   if (!key) return { ok: false, error: 'missing_shop_key' };
 
-
+  // Compat: getShopCookie(shopKey, AbortSignal)
+  if (options && typeof options.aborted === 'boolean' && typeof options.addEventListener === 'function') {
+    options = { signal: options };
+  }
 
   if (options.forceRefresh) invalidateShopCookie(key);
 
-
-
   const cached = cookieCache.get(key);
-
   if (cached && Date.now() - cached.at < COOKIE_TTL_MS) {
-
     return { ok: true, cookie: cached.cookie, source: cached.source };
-
   }
-
-
 
   const manual = loadManualCookiesMap();
-
   let cookie = String(manual.map[key] || '').trim();
-
   let source = cookie ? `manual:${manual.source}` : '';
 
-
-
   if (!cookie) {
-
-    cookie = await fetchCookieFromAnalyst(key);
-
+    cookie = await fetchCookieFromAnalyst(key, options.signal);
     if (cookie) source = 'analyst-api';
-
   }
-
-
 
   if (!cookie) {
-
     return { ok: false, error: 'cookie_not_found', shopKey: key };
-
   }
-
-
 
   cookieCache.set(key, { at: Date.now(), cookie, source });
-
   return { ok: true, cookie, source, shopKey: key };
-
 }
 
 

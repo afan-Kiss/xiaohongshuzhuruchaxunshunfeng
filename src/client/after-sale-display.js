@@ -11,11 +11,13 @@ function fmtMoney(n) {
 function buildAfterSaleBlocks(item, snap, helpers = {}) {
   const stateText = helpers.stateText || (() => '—');
   const formatSfFee = helpers.formatSfFee || (() => null);
+  const lifecycle = item?.afterSaleLifecycle || '';
   const hasAfterSale = Boolean(
     item?.hasAfterSale
     || snap?.hasAfterSale
     || snap?.hasRefund,
-  );
+  ) && lifecycle !== 'cancelled' && lifecycle !== 'none';
+  const showRefundUi = hasAfterSale || lifecycle === 'active' || lifecycle === 'completed' || lifecycle === 'unknown';
   const blocks = [];
 
   let feeText = '…';
@@ -33,28 +35,31 @@ function buildAfterSaleBlocks(item, snap, helpers = {}) {
     kind: feeText === '…' ? 'muted' : '',
   });
 
-  if (hasAfterSale) {
-    let refundText = '退款查询中…';
-    let refundTitle = '用户申请退款金额：查询中…';
-    let refundKind = 'muted';
-    if (item?.refundApplyAmount != null) {
-      refundText = `退款${fmtMoney(item.refundApplyAmount)}`;
-      refundTitle = `用户申请退款金额：${fmtMoney(item.refundApplyAmount)}`;
-      refundKind = 'refund';
-    } else if (item && item.warningType === 'refund_unverified') {
-      refundText = '⚠退款待核对';
-      refundTitle = '订单售后中，退款金额尚未核对';
-      refundKind = 'warn-full';
-    } else if (item) {
-      const st = stateText(item, 'refund');
-      refundText = st === '—' ? '退款查询中…' : `退款${st}`;
-      refundTitle = `用户申请退款金额：${st}`;
-      refundKind = 'muted';
-    }
-    blocks.push({ text: refundText, title: refundTitle, kind: refundKind });
-  }
+  if (!showRefundUi) return blocks;
 
-  if (hasAfterSale && item?.warningType === 'sf_fee_incomplete') {
+  const basis = item?.refundBasisAmount ?? item?.refundApplyAmount ?? null;
+  let refundText = '退款查询中…';
+  let refundTitle = '用户申请退款金额：查询中…';
+  let refundKind = 'muted';
+  if (basis != null) {
+    refundText = `退款${fmtMoney(basis)}`;
+    refundTitle = item?.refundBasis === 'actual'
+      ? `实际退款金额：${fmtMoney(basis)}`
+      : `用户申请退款金额：${fmtMoney(basis)}`;
+    refundKind = 'refund';
+  } else if (item && item.warningType === 'refund_unverified') {
+    refundText = '⚠退款待核对';
+    refundTitle = '订单售后中，退款金额尚未核对';
+    refundKind = 'warn-full';
+  } else if (item) {
+    const st = stateText(item, 'refund');
+    refundText = st === '—' ? '退款查询中…' : `退款${st}`;
+    refundTitle = `用户申请退款金额：${st}`;
+    refundKind = 'muted';
+  }
+  blocks.push({ text: refundText, title: refundTitle, kind: refundKind });
+
+  if (item?.warningType === 'sf_fee_incomplete') {
     blocks.push({
       text: '⚠利润待核对',
       title: '运费未查询完整，暂不能计算最终亏损',
@@ -63,8 +68,9 @@ function buildAfterSaleBlocks(item, snap, helpers = {}) {
     return blocks;
   }
 
-  if (!hasAfterSale || item?.refundApplyAmount == null) return blocks;
+  if (basis == null) return blocks;
   if (item.sfFeeComplete === false || item.profitPending) return blocks;
+  if (item.calculationType === 'suppressed') return blocks;
 
   const profit = item.profit;
   const sfFee = item.sfFee;

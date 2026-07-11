@@ -6,16 +6,17 @@
   // __QSF_CLIENT_BUNDLE_BEGIN__
   // __QSF_CLIENT_BUNDLE_END__
 
-  const VERSION = '3.0.5';
+  const VERSION = '3.0.6';
   const STYLE_ID = 'qf-sf-fee-inline-style';
   const SCAN_DEBOUNCE_MS = 70;
-  const BATCH_TIMEOUT_MS = 20000;
+  const BATCH_TIMEOUT_MS = 45000;
   const HEALTH_PROBE_TIMEOUT_MS = 1500;
   const RETRY_DELAYS_MS = [2000, 5000, 15000];
-  const RETRYABLE_CODES = new Set(['timeout', 'core_offline', 'upstream_error', 'stale']);
-  const NO_RETRY_CODES = new Set(['unknown_shop', 'shop_identity_conflict', 'auth_error']);
+  const RETRYABLE_CODES = new Set(['timeout', 'core_offline', 'upstream_error', 'stale', 'partial']);
+  const NO_RETRY_CODES = new Set(['unknown_shop', 'shop_identity_conflict', 'auth_error', 'not_applicable']);
   const SESSION_POLL_MS = 500;
   const RENDER_CACHE_MAX = 200;
+  const INSTANCE_ID = `inline-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
   const batchCtrl = createBatchController({ timeoutMs: BATCH_TIMEOUT_MS });
   const scanSched = createScanScheduler({
@@ -32,6 +33,10 @@
   let orderObs = null;
   let coreOnline = null;
   let renderCount = 0;
+  let destroyed = false;
+  let lastScanAt = 0;
+  let lastSuccessfulBatchAt = 0;
+  let bootListener = null;
 
   function normText(s) {
     return String(s || '').replace(/\s+/g, ' ').trim();
@@ -396,8 +401,36 @@
   }
 
   function maybeScheduleRetries(snaps, result, gen) {
-    if (!result || result.ok) {
-      for (const snap of snaps) retryState.delete(snap.packageId);
+    if (!result) return;
+    if (result.ok) {
+      for (const snap of snaps) {
+        const item = result.items?.[snap.packageId];
+        const errItem = result.errors?.[snap.packageId];
+        if (errItem) {
+          const code = errItem.errorCode || 'upstream_error';
+          if (!RETRYABLE_CODES.has(code) || NO_RETRY_CODES.has(code)) continue;
+          const prev = retryState.get(snap.packageId) || { attempt: 0 };
+          retryState.set(snap.packageId, { ...prev, lastCode: code, gen });
+          scheduleRetry(snap.packageId, gen, prev.attempt || 0);
+          continue;
+        }
+        if (!item) continue;
+        const code = item.errorCode || item.state || '';
+        if (code === 'partial' || item.sfFeeComplete === false) {
+          const prev = retryState.get(snap.packageId) || { attempt: 0 };
+          retryState.set(snap.packageId, { ...prev, lastCode: 'partial', gen });
+          scheduleRetry(snap.packageId, gen, prev.attempt || 0);
+          continue;
+        }
+        if (code === 'fresh' || code === 'not_applicable') {
+          retryState.delete(snap.packageId);
+          continue;
+        }
+        if (!RETRYABLE_CODES.has(code)) continue;
+        const prev = retryState.get(snap.packageId) || { attempt: 0 };
+        retryState.set(snap.packageId, { ...prev, lastCode: code, gen });
+        scheduleRetry(snap.packageId, gen, prev.attempt || 0);
+      }
       return;
     }
     const code = result.errorCode || 'upstream_error';
@@ -413,23 +446,12 @@
   }
 
   function maybeScheduleItemRetries(snaps, result, gen) {
-    if (!result?.ok) return;
-    for (const snap of snaps) {
-      const item = result.items?.[snap.packageId];
-      if (!item) continue;
-      const code = item.errorCode || item.state || '';
-      if (code === 'fresh' || code === 'partial' || code === 'not_applicable') {
-        retryState.delete(snap.packageId);
-        continue;
-      }
-      if (!RETRYABLE_CODES.has(code)) continue;
-      const prev = retryState.get(snap.packageId) || { attempt: 0 };
-      retryState.set(snap.packageId, { ...prev, lastCode: code, gen });
-      scheduleRetry(snap.packageId, gen, prev.attempt || 0);
-    }
+    maybeScheduleRetries(snaps, result, gen);
   }
 
   async function runScan() {
+    if (destroyed) return;
+    lastScanAt = Date.now();
     const gen = sessionGeneration;
     const cards = findOrderCards();
     const snaps = cards.map((card) => {
@@ -438,7 +460,7 @@
       return snap;
     });
     for (const snap of snaps) {
-      if (isSessionStale(gen)) return;
+      if (isSessionStale(gen) || destroyed) return;
       paintCard(snap, null, false);
     }
     if (!snaps.length) return;
@@ -452,16 +474,17 @@
     }
 
     const online = await probeCore();
-    if (isSessionStale(gen)) return;
+    if (isSessionStale(gen) || destroyed) return;
 
     if (!online) {
       paintCoreOffline(snaps);
+      maybeScheduleRetries(snaps, { ok: false, errorCode: 'core_offline' }, gen);
       return;
     }
 
     const shopKey = resolveLocalShopKey();
     const result = await batchFetch(payload, shopKey, gen);
-    if (isSessionStale(gen) || !result) return;
+    if (isSessionStale(gen) || destroyed || !result) return;
 
     if (!result.ok) {
       const code = result.errorCode || 'upstream_error';
@@ -472,6 +495,7 @@
       return;
     }
 
+    lastSuccessfulBatchAt = Date.now();
     maybeScheduleItemRetries(snaps, result, gen);
 
     for (const snap of snaps) {
@@ -495,33 +519,95 @@
     orderObs.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
   }
 
+  function destroy() {
+    destroyed = true;
+    batchCtrl.cancelBatch();
+    clearRetries();
+    scanSched.clearTimer();
+    if (orderObs) {
+      orderObs.disconnect();
+      orderObs = null;
+    }
+    if (sessionObs) {
+      sessionObs.disconnect();
+      sessionObs = null;
+    }
+    if (sessionPollTimer) {
+      clearInterval(sessionPollTimer);
+      sessionPollTimer = null;
+    }
+    if (bootListener) {
+      document.removeEventListener('DOMContentLoaded', bootListener);
+      bootListener = null;
+    }
+    document.querySelectorAll('.qsf-inline-fee-wrap').forEach((el) => el.remove());
+    document.getElementById(STYLE_ID)?.remove();
+    if (window.__qfSfFeeInline?.instanceId === INSTANCE_ID) {
+      delete window.__qfSfFeeInline;
+    }
+  }
+
+  function health() {
+    return {
+      alive: !destroyed && window.__qfSfFeeInline?.instanceId === INSTANCE_ID,
+      instanceId: INSTANCE_ID,
+      version: VERSION,
+      lastScanAt,
+      lastSuccessfulBatchAt,
+      sessionPolling: Boolean(sessionPollTimer),
+      orderObserverActive: Boolean(orderObs),
+      sessionObserverActive: Boolean(sessionObs),
+      retryCount: retryState.size,
+    };
+  }
+
+  function compareSemverLocal(a, b) {
+    const pa = String(a || '0').split('.').map((n) => Number(n) || 0);
+    const pb = String(b || '0').split('.').map((n) => Number(n) || 0);
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i += 1) {
+      const x = pa[i] || 0;
+      const y = pb[i] || 0;
+      if (x > y) return 1;
+      if (x < y) return -1;
+    }
+    return 0;
+  }
+
   function boot() {
-    if (window.__qfSfFeeInline?.version === VERSION) return;
+    const existing = window.__qfSfFeeInline;
+    if (existing) {
+      const existingHealth = typeof existing.health === 'function' ? existing.health() : null;
+      const cmp = compareSemverLocal(VERSION, existing.version || '0');
+      if (cmp < 0) return;
+      if (cmp === 0 && existingHealth?.alive) return;
+      if (typeof existing.destroy === 'function') existing.destroy();
+      else if (typeof existing.teardown === 'function') existing.teardown();
+    }
+    destroyed = false;
     injectStyles();
     watchSession();
     watchOrders();
     scanSched.scheduleScan(true);
     window.__qfSfFeeInline = {
       version: VERSION,
+      instanceId: INSTANCE_ID,
       rescan: () => scanSched.scheduleScan(true),
       syncSession: () => syncSession(),
       getStats: () => ({
         ...scanSched.getStats(),
         ...batchCtrl.getStats(),
         renderCount,
+        health: health(),
       }),
-      destroy: () => {
-        batchCtrl.cancelBatch();
-        clearRetries();
-        scanSched.clearTimer();
-        if (orderObs) orderObs.disconnect();
-        if (sessionObs) sessionObs.disconnect();
-        if (sessionPollTimer) clearInterval(sessionPollTimer);
-      },
+      health,
+      destroy,
+      teardown: destroy,
     };
   }
 
   if (document.readyState === 'loading') {
+    bootListener = boot;
     document.addEventListener('DOMContentLoaded', boot, { once: true });
   } else {
     boot();

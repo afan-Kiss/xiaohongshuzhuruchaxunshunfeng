@@ -1,9 +1,14 @@
 /** CDP 注入：严格异常检查 + 注入后实测验证 */
 
-const TEARDOWN_EXPR = `(function(){
+const TEARDOWN_EXPR = `(async function(){
   try {
-    if (window.__qfSfFeeInline?.teardown) window.__qfSfFeeInline.teardown();
-    else if (window.__qfSfFeePanel?.teardown) window.__qfSfFeePanel.teardown();
+    var api = window.__qfSfFeeInline;
+    if (api) {
+      if (typeof api.teardown === 'function') await api.teardown();
+      else if (typeof api.destroy === 'function') await api.destroy();
+    }
+    if (window.__qfSfFeePanel?.teardown) await window.__qfSfFeePanel.teardown();
+    else if (window.__qfSfFeePanel?.destroy) await window.__qfSfFeePanel.destroy();
     delete window.__qfSfFeeInline;
     delete window.__qfSfFeePanel;
     delete window.__qfSfExpandPanel;
@@ -31,12 +36,16 @@ const TEARDOWN_EXPR = `(function(){
 const VERSION_PROBE_EXPR = `(function(){
   var inline = window.__qfSfFeeInline;
   var panel = window.__qfSfFeePanel;
+  var health = null;
+  try { health = inline && typeof inline.health === 'function' ? inline.health() : null; } catch (e) { health = null; }
   return {
     version: inline && inline.version || panel && panel.version || '',
     mode: inline ? 'inline' : (panel ? 'panel' : 'none'),
     hasInline: !!inline,
     hasLegacyPanel: !!document.getElementById('qf-sf-fee-panel-root'),
     inlineRows: document.querySelectorAll('.qsf-inline-fee-row').length,
+    alive: health ? health.alive === true : !!inline,
+    health: health,
   };
 })()`;
 
@@ -87,7 +96,8 @@ function isVerifiedProbe(info, expectedVersion) {
   return info.mode === 'inline'
     && info.hasInline === true
     && info.version === expectedVersion
-    && !info.hasLegacyPanel;
+    && !info.hasLegacyPanel
+    && info.alive !== false;
 }
 
 async function probePage(client) {
@@ -162,11 +172,29 @@ async function registerPageScriptOnNewDocument(client, ws, source, version) {
 }
 
 async function clearRegisteredPageScripts(client, ws) {
-  const prev = globalScriptRegistry.get(ws);
-  if (prev?.identifier) {
-    await removeRegisteredScript(client, prev.identifier);
+  const known = [];
+  for (const entry of globalScriptRegistry.byWs.values()) {
+    if (entry?.identifier) known.push(entry.identifier);
+  }
+  const prev = ws ? globalScriptRegistry.get(ws) : null;
+  if (prev?.identifier && !known.includes(prev.identifier)) known.push(prev.identifier);
+  for (const id of known) {
+    await removeRegisteredScript(client, id);
   }
   if (ws) globalScriptRegistry.delete(ws);
+}
+
+function compareSemver(a, b) {
+  const pa = String(a || '0').split('.').map((n) => Number(n) || 0);
+  const pb = String(b || '0').split('.').map((n) => Number(n) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i += 1) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x > y) return 1;
+    if (x < y) return -1;
+  }
+  return 0;
 }
 
 async function softInjectPage(client, source, expectedVersion, ws) {
@@ -288,8 +316,9 @@ module.exports = {
   hardInjectPage,
   clearRegisteredPageScripts,
   registerPageScriptOnNewDocument,
-  PageScriptRegistry,
+  removeRegisteredScript,
   globalScriptRegistry,
   createEmptyProbe,
   probeToRecord,
+  compareSemver,
 };

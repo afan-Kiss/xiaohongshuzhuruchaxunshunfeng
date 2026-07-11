@@ -18,11 +18,15 @@ function runWithAbortTimeout(fn, ms, label, parentSignal) {
     }
   }
 
+  function abortedError(code) {
+    const err = new Error(`${label || 'request'}_${code === 'timeout' ? 'timeout' : 'aborted'}`);
+    err.code = code === 'timeout' ? 'timeout' : 'aborted';
+    return err;
+  }
+
   if (parentSignal) {
     if (parentSignal.aborted) {
-      const err = new Error(`${label || 'request'}_aborted`);
-      err.code = 'timeout';
-      return Promise.reject(err);
+      return Promise.reject(abortedError('aborted'));
     }
     onParentAbort = () => ctrl.abort();
     parentSignal.addEventListener('abort', onParentAbort, { once: true });
@@ -32,11 +36,13 @@ function runWithAbortTimeout(fn, ms, label, parentSignal) {
 
   return Promise.resolve()
     .then(() => fn(signal))
+    .then((value) => {
+      if (signal.aborted) throw abortedError(parentSignal?.aborted ? 'aborted' : 'timeout');
+      return value;
+    })
     .catch((err) => {
       if (signal.aborted) {
-        const timeoutErr = new Error(`${label || 'request'}_timeout`);
-        timeoutErr.code = 'timeout';
-        throw timeoutErr;
+        throw abortedError(parentSignal?.aborted ? 'aborted' : 'timeout');
       }
       throw err;
     })

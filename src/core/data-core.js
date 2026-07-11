@@ -88,6 +88,7 @@ function createDataCore(options = {}) {
   else if (schemaVersion < 2 && persisted.sf) {
     sfOkCache.load(persisted.sf, CACHE_PROFILE.sfOk);
   }
+  if (persisted.sfErr) sfErrCache.load(persisted.sfErr, CACHE_PROFILE.sfErr);
 
   let persistTimer = null;
   function schedulePersist() {
@@ -101,13 +102,14 @@ function createDataCore(options = {}) {
         afterSaleOpen: afterSaleOpenCache.dump(),
         afterSaleClosed: afterSaleClosedCache.dump(),
         sfOk: sfOkCache.dump(),
+        sfErr: sfErrCache.dump(),
       });
     }, 100);
   }
 
   async function getCookie(shopKey, signal) {
     if (testHooks.getCookie) return testHooks.getCookie(shopKey, signal);
-    return runWithAbortTimeout((sig) => getShopCookie(shopKey, sig), TIMEOUT.cookie, 'cookie', signal);
+    return runWithAbortTimeout((sig) => getShopCookie(shopKey, { signal: sig }), TIMEOUT.cookie, 'cookie', signal);
   }
 
   async function readCache(cache, key, metricsRef) {
@@ -358,7 +360,7 @@ function createDataCore(options = {}) {
             error: normalized.error,
             errorCode: normalized.errorCode,
           });
-          const target = normalized.errorCode && normalized.errorCode !== 'not_found'
+          const target = normalized.errorCode
             ? sfErrCache
             : sfOkCache;
           target.set(key, normalized, {
@@ -584,6 +586,7 @@ function createDataCore(options = {}) {
         afterSaleOpen: afterSaleOpenCache,
         afterSaleClosed: afterSaleClosedCache,
         sfOk: sfOkCache,
+        sfErr: sfErrCache,
       };
     },
   };

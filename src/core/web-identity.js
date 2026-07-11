@@ -4,7 +4,7 @@
 const WEB_SERVICE = 'qf-sf-fee-web';
 
 function validateWebStatus(body, expected = {}) {
-  const version = String(expected.version || '3.0.5');
+  const version = String(expected.version || '3.0.6');
   const dataCoreVersion = String(expected.dataCoreVersion || version);
   const dataCoreService = String(expected.dataCoreService || 'qf-sf-data-core');
   const runtimeInstanceId = String(expected.runtimeInstanceId || '');
@@ -37,10 +37,10 @@ function buildWebStatusPayload(options = {}) {
   return {
     ok: true,
     service: WEB_SERVICE,
-    version: options.version || '3.0.5',
+    version: options.version || '3.0.6',
     dataCoreBacked: true,
     dataCoreService: options.dataCoreService || 'qf-sf-data-core',
-    dataCoreVersion: options.dataCoreVersion || options.version || '3.0.5',
+    dataCoreVersion: options.dataCoreVersion || options.version || '3.0.6',
     runtimeInstanceId: options.runtimeInstanceId || '',
   };
 }

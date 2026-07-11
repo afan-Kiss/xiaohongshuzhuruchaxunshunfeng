@@ -4,6 +4,8 @@
  */
 
 const YUAN_FIELDS = new Set([
+  'sku_pay_amount',
+  'skuPayAmount',
   'customer_pay_amount',
   'customerPayAmount',
   'paid_amount',
@@ -85,7 +87,7 @@ function parseFieldAmount(key, raw) {
   const k = String(key || '');
   if (FEN_FIELDS.has(k)) return parseFenAmount(raw);
   if (YUAN_FIELDS.has(k)) return parseYuanAmount(raw);
-  return parseYuanAmount(raw);
+  return null;
 }
 
 /** @deprecated use parseYuanAmount */
@@ -273,9 +275,17 @@ function pickPaidAmount(raw) {
     if (parsed != null && parsed > 0) return parsed;
   }
   const skus = raw.sku_snapshots || raw.skuSnapshots || [];
-  if (Array.isArray(skus) && skus[0]) {
-    const skuPay = parseFieldAmount('sku_pay_amount', skus[0].sku_pay_amount ?? skus[0].skuPayAmount);
-    if (skuPay != null && skuPay > 0) return skuPay;
+  if (Array.isArray(skus) && skus.length) {
+    let sum = 0;
+    let hit = 0;
+    for (const sku of skus) {
+      const skuPay = parseFieldAmount('sku_pay_amount', sku.sku_pay_amount ?? sku.skuPayAmount);
+      if (skuPay != null && skuPay > 0) {
+        sum += skuPay;
+        hit += 1;
+      }
+    }
+    if (hit > 0) return roundYuan(sum);
   }
   return null;
 }
@@ -426,14 +436,17 @@ function normalizeAfterSale(data, hints = {}) {
 function normalizeSfFee(result) {
   const waybill = String(result?.waybill || '').trim();
   if (!result?.ok) {
-    const msg = String(result?.error || 'sf_query_failed');
+    const msg = String(result?.error || result?.errorCode || 'sf_query_failed');
     let errorCode = 'upstream_error';
     if (/非顺丰/.test(msg)) errorCode = 'not_applicable';
     else if (/未配置|月结卡/.test(msg)) errorCode = 'config_error';
-    else if (/8151|8148/.test(msg)) errorCode = 'not_found';
+    else if (/8151|8148|not_found/.test(msg) || result?.errorCode === 'not_found' || result?.errorCode === '8148') {
+      errorCode = 'not_found';
+    }
     return { sfFee: null, error: msg, errorCode, waybill, state: errorCode };
   }
-  const fee = result.totalFee != null ? roundYuan(result.totalFee) : null;
+  const fee = result.totalFee != null ? roundYuan(result.totalFee)
+    : (result.sfFee != null ? roundYuan(result.sfFee) : null);
   return { sfFee: fee, error: null, errorCode: null, waybill, state: 'fresh' };
 }
 
@@ -562,13 +575,30 @@ function mergeCardDto(parts = {}) {
   else if (parts.stale) state = 'stale';
   else if (sf.state === 'partial') state = 'partial';
 
-  const profit = computeProfit(paidAmount, refundApplyAmount, sfFee, sfFeeComplete);
+  const afterSaleStatus = after.afterSaleStatus || pkg.afterSaleStatus || hints.afterSaleStatus || '';
+  const preMetrics = computeAfterSaleMetrics({
+    hints,
+    package: pkg,
+    afterSale: after,
+    afterSaleStatus,
+    paidAmount,
+    refundApplyAmount,
+    refundActualAmount,
+    sfFee,
+    sfFeeComplete,
+  });
+  const refundBasisAmount = preMetrics.refundBasisAmount;
+  const profit = preMetrics.calculationType === 'suppressed'
+    ? null
+    : computeProfit(paidAmount, refundBasisAmount, sfFee, sfFeeComplete);
   const metrics = computeAfterSaleMetrics({
     hints,
     package: pkg,
     afterSale: after,
+    afterSaleStatus,
     paidAmount,
     refundApplyAmount,
+    refundActualAmount,
     sfFee,
     sfFeeComplete,
     profit,
@@ -584,8 +614,12 @@ function mergeCardDto(parts = {}) {
     paidAmount,
     refundApplyAmount,
     refundActualAmount,
+    refundBasisAmount: metrics.refundBasisAmount,
+    refundBasis: metrics.refundBasis,
+    calculationType: metrics.calculationType,
     hasAfterSale: metrics.hasAfterSale,
-    afterSaleStatus: after.afterSaleStatus || pkg.afterSaleStatus || hints.afterSaleStatus || '',
+    afterSaleLifecycle: metrics.afterSaleLifecycle,
+    afterSaleStatus,
     afterSaleType: after.afterSaleType || pkg.afterSaleType || '',
     sfFee,
     sfFeeComplete,
