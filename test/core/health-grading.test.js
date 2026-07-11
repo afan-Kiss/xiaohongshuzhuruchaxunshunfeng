@@ -2,7 +2,7 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { createRuntimeState, VERSION } = require('../../src/core/runtime-state');
 
-describe('health grading v3.0.2', () => {
+describe('health grading v3.0.3', () => {
   it('healthy when all green', () => {
     const st = createRuntimeState();
     st.setFlags({
@@ -38,6 +38,7 @@ describe('health grading v3.0.2', () => {
     const h = st.buildHealth();
     assert.ok(h.degradedReasons.includes('sf_unverified'), h.degradedReasons.join(','));
     assert.notEqual(h.checks.sfReady, true);
+    assert.equal(h.checks.sfVerified, false);
   });
 
   it('unhealthy when package api down', () => {

@@ -3,8 +3,8 @@ const assert = require('node:assert/strict');
 const { validateWebStatus, buildWebStatusPayload } = require('../../src/core/web-identity');
 
 const EXPECT = {
-  version: '3.0.2',
-  dataCoreVersion: '3.0.2',
+  version: '3.0.3',
+  dataCoreVersion: '3.0.3',
   runtimeInstanceId: 'inst-1',
 };
 

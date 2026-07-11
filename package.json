@@ -1,13 +1,15 @@
 {
   "name": "xhs-qf-sf-fee",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "private": true,
   "description": "千帆客服台顺丰月结扣费 — 统一 Data Core Runtime",
   "scripts": {
     "start": "node src/runtime.js",
     "start:runtime": "node src/runtime.js",
     "start:legacy-inject": "node src/injection-daemon.js",
-    "pretest": "node scripts/sync-inline-client.js",
+    "build:inline": "node scripts/sync-inline-client.js --write",
+    "check:inline": "node scripts/sync-inline-client.js --check && node --check inject/qf-sf-fee-inline.js",
+    "pretest": "npm run check:inline",
     "check": "node scripts/check-all-versions.js && node scripts/smoke-health.js",
     "check:versions": "node scripts/check-all-versions.js",
     "test": "node --test test/**/*.test.js",

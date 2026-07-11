@@ -3,10 +3,21 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 const { resolveDevtoolsFromQianfanBot } = require('./read-qianfan-debug-config');
 const { buildInjectSource, isQianfanPageUrl } = require('./build-inject-source');
 const { connectCdp } = require('./cdp-connect');
-const { injectPage, VERSION_PROBE_EXPR } = require('./inject-page');
+const {
+  injectPage,
+  evaluateOrThrow,
+  evaluateBestEffort,
+  probePage,
+  isVerifiedProbe,
+  globalScriptRegistry,
+  createEmptyProbe,
+  probeToRecord,
+  TEARDOWN_EXPR,
+} = require('./inject-page');
 
 const ROOT = path.resolve(__dirname, '..');
 const CONFIG_PATH = path.join(ROOT, 'config.json');
@@ -15,6 +26,14 @@ const LOG_PREFIX = '[顺丰运费注入]';
 
 function log(msg) {
   console.log(`${new Date().toLocaleString('zh-CN', { hour12: false })} ${LOG_PREFIX} ${msg}`);
+}
+
+function logInjectError(page, err) {
+  const title = page?.title || err?.page?.title || 'page';
+  const url = page?.url || err?.page?.url || '';
+  const line = err?.lineNumber != null ? `:${err.lineNumber}` : '';
+  const col = err?.columnNumber != null ? `:${err.columnNumber}` : '';
+  log(`注入失败 [${title}] ${url} ${err?.code || ''} ${err?.message || err}${line}${col}`);
 }
 
 function loadInjectConfig() {
@@ -49,58 +68,101 @@ async function fetchPageList(host, port) {
   return list.filter((t) => t.type === 'page' && t.webSocketDebuggerUrl && isQianfanPageUrl(t.url));
 }
 
-async function injectToPage(page, source, prev, panelVersion) {
-  let client;
-  try {
-    client = await connectCdp(page.webSocketDebuggerUrl, 8000);
-    try {
-      await client.Page.enable();
-    } catch {
-      /* ignore */
-    }
-    await injectPage(client, source, {
-      softFirst: Boolean(prev?.ok) && prev?.injectedVersion === panelVersion,
-      expectedVersion: panelVersion,
-      registerOnNewDocument: !prev?.scriptRegistered || prev?.injectedVersion !== panelVersion,
-    });
-    return true;
-  } finally {
-    if (client) {
-      try {
-        await client.close();
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-}
-
 function readPanelVersion() {
   if (!fs.existsSync(INLINE_SCRIPT_PATH)) return '';
   const panelJs = fs.readFileSync(INLINE_SCRIPT_PATH, 'utf8');
   return panelJs.match(/const VERSION = '([^']+)'/)?.[1] || '';
 }
 
-async function probePageVersion(ws, expectedVersion) {
+async function probePageLive(page, expectedVersion) {
   let client;
   try {
-    client = await connectCdp(ws, 5000);
-    const check = await client.Runtime.evaluate({
-      expression: VERSION_PROBE_EXPR,
-      returnByValue: true,
+    client = await connectCdp(page.webSocketDebuggerUrl, 5000);
+    const probe = await probePage(client);
+    const record = probeToRecord(probe, expectedVersion, {
+      title: page.title || '',
+      url: page.url || '',
     });
-    const info = check.result?.value || {};
+    return record;
+  } catch (err) {
     return {
-      version: info.version || '',
-      ok: info.version === expectedVersion && info.hasInline && !info.hasLegacyPanel,
+      ...createEmptyProbe(expectedVersion),
+      title: page.title || '',
+      url: page.url || '',
+      error: err.message || String(err),
+      errorCode: err.code || 'probe_error',
+      fails: 1,
     };
-  } catch {
-    return { version: '', ok: false };
   } finally {
     if (client) {
       try { await client.close(); } catch { /* ignore */ }
     }
   }
+}
+
+async function injectToPage(page, source, prev, panelVersion) {
+  const ws = page.webSocketDebuggerUrl;
+  let client;
+  try {
+    client = await connectCdp(ws, 8000);
+    try {
+      await client.Page.enable();
+    } catch {
+      /* ignore */
+    }
+    const result = await injectPage(client, source, {
+      softFirst: Boolean(prev?.ok) && prev?.actualVersion === panelVersion,
+      expectedVersion: panelVersion,
+      registerOnNewDocument: !prev?.scriptRegistered || prev?.actualVersion !== panelVersion,
+      ws,
+      pageTitle: page.title || '',
+      pageUrl: page.url || '',
+    });
+    const probe = await probePage(client);
+    if (!isVerifiedProbe(probe, panelVersion)) {
+      const error = new Error(`injection_verify_failed after ${result.mode}`);
+      error.code = 'injection_verify_failed';
+      error.probe = probe;
+      throw error;
+    }
+    return {
+      ...probeToRecord(probe, panelVersion, {
+        title: page.title || '',
+        url: page.url || '',
+        lastInjectAt: Date.now(),
+        fails: 0,
+        scriptRegistered: Boolean(result.scriptIdentifier),
+        scriptIdentifier: result.scriptIdentifier || prev?.scriptIdentifier || '',
+        injectMode: result.mode,
+      }),
+    };
+  } finally {
+    if (client) {
+      try { await client.close(); } catch { /* ignore */ }
+    }
+  }
+}
+
+function buildDevtoolsStatus(pages, injectedMap, panelVersion) {
+  const pageRecords = pages.map((page) => {
+    const entry = injectedMap.get(page.webSocketDebuggerUrl);
+    if (entry) return { ...entry };
+    return {
+      ...createEmptyProbe(panelVersion),
+      title: page.title || '',
+      url: page.url || '',
+    };
+  });
+  const verified = pageRecords.filter((p) => p.verified);
+  const versions = verified.map((p) => p.actualVersion);
+  return {
+    connected: true,
+    pageCount: pages.length,
+    injectedCount: verified.length,
+    expectedVersion: panelVersion,
+    versions,
+    pages: pageRecords,
+  };
 }
 
 async function startInjectionDaemon(options = {}) {
@@ -155,6 +217,7 @@ async function startInjectionDaemon(options = {}) {
           { packageProxyPort: config.packageProxyPort },
         );
         injected.clear();
+        globalScriptRegistry.byWs.clear();
         log(`检测到内嵌新版本 v${panelVersion}，将同步注入全部页面`);
       }
 
@@ -168,68 +231,58 @@ async function startInjectionDaemon(options = {}) {
       lastPageCount = pages.length;
 
       const alive = new Set(pages.map((p) => p.webSocketDebuggerUrl));
+      globalScriptRegistry.pruneAlive(alive);
       for (const [ws] of injected) {
         if (!alive.has(ws)) injected.delete(ws);
       }
 
-      const versions = [];
       for (const page of pages) {
         const ws = page.webSocketDebuggerUrl;
-        const prev = injected.get(ws) || { ok: false, fails: 0 };
-        let needInject = !prev.ok || prev.injectedVersion !== panelVersion;
+        const prev = injected.get(ws) || createEmptyProbe(panelVersion);
+        let needInject = !prev.verified || prev.actualVersion !== panelVersion;
 
-        if (!needInject && prev.ok) {
-          const due = !prev.versionCheckedAt || Date.now() - prev.versionCheckedAt > 30000;
+        if (!needInject && prev.verified) {
+          const due = !prev.lastVerifiedAt || Date.now() - prev.lastVerifiedAt > 30000;
           if (due) {
-            const probe = await probePageVersion(ws, panelVersion);
-            prev.versionCheckedAt = Date.now();
-            if (!probe.ok) needInject = true;
-            else versions.push(probe.version || panelVersion);
-          } else {
-            versions.push(panelVersion);
+            const live = await probePageLive(page, panelVersion);
+            prev.lastVerifiedAt = Date.now();
+            if (!live.verified) {
+              needInject = true;
+              injected.set(ws, { ...live, fails: (prev.fails || 0) + 1 });
+            } else {
+              injected.set(ws, { ...prev, ...live, fails: 0 });
+            }
           }
           if (!needInject) continue;
         }
 
         needFastPoll = true;
         try {
-          await injectToPage(page, injectSource, prev, panelVersion);
-          injected.set(ws, {
-            ok: true,
-            fails: 0,
-            lastInjectAt: Date.now(),
-            injectedVersion: panelVersion,
-            title: page.title,
-            url: page.url,
-            scriptRegistered: true,
-          });
-          versions.push(panelVersion);
-          if (!prev.ok) log(`已注入: ${page.title || page.url}`);
+          const record = await injectToPage(page, injectSource, prev, panelVersion);
+          injected.set(ws, record);
+          if (!prev.verified) log(`已注入: ${page.title || page.url} v${record.actualVersion}`);
         } catch (err) {
           const fails = (prev.fails || 0) + 1;
-          injected.set(ws, {
-            ok: false,
+          const failRecord = {
+            ...createEmptyProbe(panelVersion),
+            title: page.title || '',
+            url: page.url || '',
             fails,
             lastInjectAt: Date.now(),
-            injectedVersion: prev.injectedVersion || '',
-            title: page.title,
-            url: page.url,
-          });
-          if (fails <= 2) log(`注入失败 (${page.title || 'page'}): ${err.message || err}`);
+            error: err.message || String(err),
+            errorCode: err.code || 'inject_error',
+            probe: err.probe || null,
+          };
+          injected.set(ws, failRecord);
+          if (fails <= 3) logInjectError(page, err);
         }
       }
 
-      const injectedOk = [...injected.values()].filter((v) => v.ok).length;
-      onStatus({
-        connected: true,
-        pageCount: pages.length,
-        injectedCount: injectedOk,
-        expectedVersion: panelVersion,
-        versions,
-      });
+      const status = buildDevtoolsStatus(pages, injected, panelVersion);
+      onStatus(status);
 
       if (Date.now() - lastStatusLog > 60000) {
-        log(`状态 · DevTools 在线 · 千帆页 ${lastPageCount} · 已注入 ${injectedOk}/${injected.size} · v${panelVersion}`);
+        log(`状态 · DevTools 在线 · 千帆页 ${status.pageCount} · 已验证 ${status.injectedCount}/${status.pageCount} · v${panelVersion}`);
         lastStatusLog = Date.now();
       }
     } catch (err) {
@@ -244,6 +297,7 @@ async function startInjectionDaemon(options = {}) {
         injectedCount: 0,
         expectedVersion: panelVersion,
         versions: [],
+        pages: [],
       });
       needFastPoll = true;
     }
@@ -259,4 +313,12 @@ async function startInjectionDaemon(options = {}) {
   return { stopped: true };
 }
 
-module.exports = { startInjectionDaemon, loadInjectConfig, INLINE_SCRIPT_PATH };
+module.exports = {
+  startInjectionDaemon,
+  loadInjectConfig,
+  INLINE_SCRIPT_PATH,
+  readPanelVersion,
+  probePageLive,
+  buildDevtoolsStatus,
+  injectToPage,
+};

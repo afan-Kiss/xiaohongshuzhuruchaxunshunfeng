@@ -1,4 +1,4 @@
-const VERSION = '3.0.2';
+const VERSION = '3.0.3';
 const SERVICE = 'qf-sf-data-core';
 
 function createRuntimeState(options = {}) {
@@ -10,6 +10,7 @@ function createRuntimeState(options = {}) {
     injectedCount: 0,
     expectedVersion: VERSION,
     versions: [],
+    pages: [],
   };
   let flags = {
     processAlive: true,
@@ -17,6 +18,7 @@ function createRuntimeState(options = {}) {
     packageApiReady: false,
     afterSaleReady: false,
     sfConfigured: false,
+    sfVerified: false,
     sfReady: false,
     devtoolsConnected: false,
     pageInjectionReady: false,
@@ -34,12 +36,22 @@ function createRuntimeState(options = {}) {
     devtools = { ...devtools, ...patch };
     flags.devtoolsConnected = Boolean(devtools.connected);
     const expected = devtools.expectedVersion || VERSION;
-    const versions = devtools.versions || [];
-    const allMatch = devtools.pageCount > 0
-      && devtools.injectedCount >= devtools.pageCount
-      && versions.length >= devtools.pageCount
-      && versions.every((v) => v === expected);
-    flags.pageInjectionReady = devtools.pageCount === 0 ? true : allMatch;
+    const pages = Array.isArray(devtools.pages) ? devtools.pages : [];
+    if (pages.length > 0) {
+      const verifiedPages = pages.filter((p) => p.verified);
+      devtools.injectedCount = verifiedPages.length;
+      devtools.versions = verifiedPages.map((p) => p.actualVersion || p.version || '');
+      flags.pageInjectionReady = devtools.pageCount > 0
+        && verifiedPages.length >= devtools.pageCount
+        && pages.every((p) => p.verified && (p.actualVersion || p.version) === expected);
+    } else {
+      const versions = devtools.versions || [];
+      flags.pageInjectionReady = devtools.pageCount === 0 ? true : (
+        devtools.injectedCount >= devtools.pageCount
+        && versions.length >= devtools.pageCount
+        && versions.every((v) => v === expected)
+      );
+    }
   }
 
   function setFlags(patch) {
@@ -60,12 +72,14 @@ function createRuntimeState(options = {}) {
       sfMeta.sfLastError = null;
       sfMeta.sfLastErrorCode = null;
       sfMeta.sfLastSuccessAt = at;
+      flags.sfVerified = true;
       flags.sfReady = true;
     } else if (result.attempted) {
       sfMeta.sfLastQueryOK = false;
       sfMeta.sfLastError = result.error || null;
       sfMeta.sfLastErrorCode = result.errorCode || null;
       sfMeta.sfLastFailureAt = at;
+      flags.sfVerified = true;
       flags.sfReady = false;
     }
   }
@@ -76,6 +90,7 @@ function createRuntimeState(options = {}) {
 
     const coreOk = flags.coreReady && flags.packageApiReady && flags.afterSaleReady;
     if (!flags.sfConfigured) degradedReasons.push('sf_config_missing');
+    else if (!flags.sfVerified) degradedReasons.push('sf_unverified');
     else if (sfMeta.sfLastQueryOK === false) {
       const code = sfMeta.sfLastErrorCode || '';
       if (code === 'auth_error' || /A1006|签名/.test(sfMeta.sfLastError || '')) {
@@ -83,8 +98,6 @@ function createRuntimeState(options = {}) {
       } else {
         degradedReasons.push('sf_upstream_error');
       }
-    } else if (sfMeta.sfLastQueryOK === null && flags.sfConfigured) {
-      degradedReasons.push('sf_unverified');
     }
     if (!flags.devtoolsConnected) degradedReasons.push('devtools_offline');
     if (devtools.pageCount === 0) degradedReasons.push('no_qianfan_pages');

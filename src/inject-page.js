@@ -1,4 +1,4 @@
-/** CDP 注入：优先热更新，必要时硬重注入 */
+/** CDP 注入：严格异常检查 + 注入后实测验证 */
 
 const TEARDOWN_EXPR = `(function(){
   try {
@@ -32,80 +32,264 @@ const VERSION_PROBE_EXPR = `(function(){
   var inline = window.__qfSfFeeInline;
   var panel = window.__qfSfFeePanel;
   return {
-    version: inline && inline.version || panel && panel.version,
+    version: inline && inline.version || panel && panel.version || '',
     mode: inline ? 'inline' : (panel ? 'panel' : 'none'),
     hasInline: !!inline,
     hasLegacyPanel: !!document.getElementById('qf-sf-fee-panel-root'),
+    inlineRows: document.querySelectorAll('.qsf-inline-fee-row').length,
   };
 })()`;
 
-async function evaluate(client, expression, opts = {}) {
-  const { Runtime } = client;
-  return Runtime.evaluate({
+function formatEvaluateError(response) {
+  const details = response.exceptionDetails || {};
+  return details.exception?.description || details.text || 'Runtime.evaluate failed';
+}
+
+async function evaluateOrThrow(client, expression, options = {}) {
+  const response = await client.Runtime.evaluate({
     expression,
     returnByValue: true,
-    awaitPromise: Boolean(opts.awaitPromise),
+    awaitPromise: Boolean(options.awaitPromise),
   });
+  if (response.exceptionDetails) {
+    const details = response.exceptionDetails;
+    const message = formatEvaluateError(response);
+    const error = new Error(message);
+    error.code = 'cdp_evaluate_error';
+    error.lineNumber = details.lineNumber;
+    error.columnNumber = details.columnNumber;
+    error.stackTrace = details.stackTrace;
+    error.exceptionDetails = details;
+    throw error;
+  }
+  return response;
 }
 
-async function softInjectPage(client, source, expectedVersion) {
-  await evaluate(client, source, { awaitPromise: true });
-  if (!expectedVersion) return true;
-  const probe = await evaluate(client, `(function(){
-    var inline = window.__qfSfFeeInline;
-    return {
-      version: inline && inline.version,
-      mode: inline ? 'inline' : 'none',
-      hasInline: !!inline,
-      hasLegacyPanel: !!document.getElementById('qf-sf-fee-panel-root'),
-    };
-  })()`);
-  const info = probe.result?.value || {};
-  return info.version === expectedVersion && info.hasInline && !info.hasLegacyPanel;
+async function evaluateBestEffort(client, expression, options = {}) {
+  try {
+    return await evaluateOrThrow(client, expression, options);
+  } catch {
+    return null;
+  }
 }
 
-async function clearRegisteredPageScripts(client) {
-  const { Page } = client;
-  if (typeof Page.removeScriptToEvaluateOnNewDocument !== 'function') return;
-  for (let i = 1; i <= 120; i += 1) {
-    try {
-      await Page.removeScriptToEvaluateOnNewDocument({ identifier: String(i) });
-    } catch {
-      /* ignore missing id */
+function probeFromResponse(response) {
+  return response?.result?.value || {
+    version: '',
+    mode: 'none',
+    hasInline: false,
+    hasLegacyPanel: false,
+    inlineRows: 0,
+  };
+}
+
+function isVerifiedProbe(info, expectedVersion) {
+  return info.mode === 'inline'
+    && info.hasInline === true
+    && info.version === expectedVersion
+    && !info.hasLegacyPanel;
+}
+
+async function probePage(client) {
+  const response = await evaluateOrThrow(client, VERSION_PROBE_EXPR);
+  return probeFromResponse(response);
+}
+
+async function waitForVerifiedInjection(client, expectedVersion, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await probePage(client);
+    if (isVerifiedProbe(last, expectedVersion)) {
+      return { ...last, verifiedAt: Date.now() };
+    }
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  const error = new Error(`injection_verify_failed: mode=${last?.mode || 'none'} version=${last?.version || ''}`);
+  error.code = 'injection_verify_failed';
+  error.probe = last;
+  throw error;
+}
+
+/** Per-page CDP script registration tracker */
+class PageScriptRegistry {
+  constructor() {
+    this.byWs = new Map();
+  }
+
+  get(ws) {
+    return this.byWs.get(ws) || null;
+  }
+
+  set(ws, entry) {
+    this.byWs.set(ws, entry);
+  }
+
+  delete(ws) {
+    this.byWs.delete(ws);
+  }
+
+  pruneAlive(aliveWsSet) {
+    for (const ws of this.byWs.keys()) {
+      if (!aliveWsSet.has(ws)) this.byWs.delete(ws);
     }
   }
+}
+
+const globalScriptRegistry = new PageScriptRegistry();
+
+async function removeRegisteredScript(client, identifier) {
+  if (!identifier || typeof client.Page.removeScriptToEvaluateOnNewDocument !== 'function') return;
+  try {
+    await client.Page.removeScriptToEvaluateOnNewDocument({ identifier });
+  } catch {
+    /* ignore missing */
+  }
+}
+
+async function registerPageScriptOnNewDocument(client, ws, source, version) {
+  const prev = globalScriptRegistry.get(ws);
+  if (prev?.identifier && prev.version !== version) {
+    await removeRegisteredScript(client, prev.identifier);
+  }
+  if (prev?.identifier && prev.version === version) {
+    return prev.identifier;
+  }
+  const result = await client.Page.addScriptToEvaluateOnNewDocument({ source });
+  const identifier = result?.identifier || '';
+  globalScriptRegistry.set(ws, { identifier, version, registeredAt: Date.now() });
+  return identifier;
+}
+
+async function clearRegisteredPageScripts(client, ws) {
+  const prev = globalScriptRegistry.get(ws);
+  if (prev?.identifier) {
+    await removeRegisteredScript(client, prev.identifier);
+  }
+  if (ws) globalScriptRegistry.delete(ws);
+}
+
+async function softInjectPage(client, source, expectedVersion, ws) {
+  await evaluateOrThrow(client, source, { awaitPromise: true });
+  if (!expectedVersion) {
+    const probe = await probePage(client);
+    return { ok: true, mode: 'soft', version: probe.version || '', verifiedAt: Date.now(), scriptIdentifier: '' };
+  }
+  const verified = await waitForVerifiedInjection(client, expectedVersion);
+  return {
+    ok: true,
+    mode: 'soft',
+    version: verified.version,
+    verifiedAt: verified.verifiedAt,
+    scriptIdentifier: globalScriptRegistry.get(ws)?.identifier || '',
+  };
 }
 
 async function hardInjectPage(client, source, options = {}) {
-  const { Page } = client;
-  await clearRegisteredPageScripts(client);
-  await evaluate(client, TEARDOWN_EXPR);
-  if (options.registerOnNewDocument) {
-    await Page.addScriptToEvaluateOnNewDocument({ source });
+  const { ws = '', expectedVersion = '', registerOnNewDocument = false } = options;
+  await clearRegisteredPageScripts(client, ws);
+  await evaluateBestEffort(client, TEARDOWN_EXPR);
+  let scriptIdentifier = '';
+  if (registerOnNewDocument && ws) {
+    scriptIdentifier = await registerPageScriptOnNewDocument(client, ws, source, expectedVersion);
+  } else if (registerOnNewDocument) {
+    const result = await client.Page.addScriptToEvaluateOnNewDocument({ source });
+    scriptIdentifier = result?.identifier || '';
   }
-  await evaluate(client, source, { awaitPromise: true });
-  return true;
+  await evaluateOrThrow(client, source, { awaitPromise: true });
+  if (!expectedVersion) {
+    const probe = await probePage(client);
+    return { ok: true, mode: 'hard', version: probe.version || '', verifiedAt: Date.now(), scriptIdentifier };
+  }
+  const verified = await waitForVerifiedInjection(client, expectedVersion);
+  return {
+    ok: true,
+    mode: 'hard',
+    version: verified.version,
+    verifiedAt: verified.verifiedAt,
+    scriptIdentifier,
+  };
 }
 
 async function injectPage(client, source, options = {}) {
-  const { softFirst = true, expectedVersion = '', registerOnNewDocument = false } = options;
+  const {
+    softFirst = true,
+    expectedVersion = '',
+    registerOnNewDocument = false,
+    ws = '',
+    pageTitle = '',
+    pageUrl = '',
+  } = options;
+
+  const logCtx = { title: pageTitle, url: pageUrl };
+
   if (softFirst) {
     try {
-      const ok = await softInjectPage(client, source, expectedVersion);
-      if (ok) return { mode: 'soft' };
-    } catch {
-      /* fall through */
+      return await softInjectPage(client, source, expectedVersion, ws);
+    } catch (err) {
+      if (err.code !== 'injection_verify_failed' && err.code !== 'cdp_evaluate_error') throw err;
+      err.page = logCtx;
     }
   }
-  await hardInjectPage(client, source, { registerOnNewDocument });
-  return { mode: 'hard' };
+
+  try {
+    return await hardInjectPage(client, source, { ws, expectedVersion, registerOnNewDocument });
+  } catch (err) {
+    err.page = logCtx;
+    throw err;
+  }
+}
+
+function createEmptyProbe(expectedVersion = '') {
+  return {
+    ok: false,
+    verified: false,
+    mode: 'none',
+    actualVersion: '',
+    expectedVersion,
+    version: '',
+    hasInline: false,
+    hasLegacyPanel: false,
+    inlineRows: 0,
+    error: null,
+    errorCode: null,
+  };
+}
+
+function probeToRecord(probe, expectedVersion, extra = {}) {
+  const ok = isVerifiedProbe(probe, expectedVersion);
+  return {
+    ok,
+    verified: ok,
+    mode: probe.mode || 'none',
+    actualVersion: probe.version || '',
+    expectedVersion,
+    version: probe.version || '',
+    hasInline: Boolean(probe.hasInline),
+    hasLegacyPanel: Boolean(probe.hasLegacyPanel),
+    inlineRows: probe.inlineRows || 0,
+    lastVerifiedAt: ok ? Date.now() : 0,
+    error: null,
+    errorCode: null,
+    ...extra,
+  };
 }
 
 module.exports = {
+  TEARDOWN_EXPR,
+  VERSION_PROBE_EXPR,
+  evaluateOrThrow,
+  evaluateBestEffort,
+  probePage,
+  waitForVerifiedInjection,
+  isVerifiedProbe,
   injectPage,
   softInjectPage,
   hardInjectPage,
   clearRegisteredPageScripts,
-  VERSION_PROBE_EXPR,
-  TEARDOWN_EXPR,
+  registerPageScriptOnNewDocument,
+  PageScriptRegistry,
+  globalScriptRegistry,
+  createEmptyProbe,
+  probeToRecord,
 };
