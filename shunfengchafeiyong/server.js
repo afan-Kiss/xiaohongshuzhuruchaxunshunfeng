@@ -7,6 +7,7 @@ const http = require('http');
 const path = require('path');
 const { loadConfig } = require('../src/load-config');
 const { querySfWaybillFees } = require('../src/sf-waybill-client');
+const { buildWebStatusPayload, WEB_SERVICE } = require('../src/core/web-identity');
 const { parseCsv, parsePaste, parseUploadFile } = require('./parse-import');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -176,6 +177,25 @@ function serveStatic(req, res, basePath, urlPath) {
 function createServer(options = {}) {
   const { sf, webPort, basePath } = loadConfig();
   const dataCore = options.dataCore || null;
+  const legacyMode = Boolean(options.legacyMode);
+  const statusPayload = options.dataCore
+    ? buildWebStatusPayload({
+      version: options.webVersion || '3.0.2',
+      dataCoreVersion: options.dataCoreVersion || '3.0.2',
+      dataCoreService: 'qf-sf-data-core',
+      runtimeInstanceId: options.runtimeInstanceId || '',
+    })
+    : {
+      ok: Boolean(sf.partnerID && (sf.checkWord || sf.checkWordSandbox)),
+      service: WEB_SERVICE,
+      version: options.webVersion || '2.0.0',
+      dataCoreBacked: false,
+      legacy: true,
+      partnerID: sf.partnerID || '',
+      monthlyCard: sf.monthlyCard || '',
+      sandbox: sf.sandbox,
+      env: sf.sandbox ? 'sandbox' : 'production',
+    };
 
   return http.createServer(async (req, res) => {
     try {
@@ -186,13 +206,7 @@ function createServer(options = {}) {
         : rawPath;
 
       if (pathname === `${basePath}/api/status` && req.method === 'GET') {
-        return sendJson(res, 200, {
-          ok: Boolean(sf.partnerID && (sf.checkWord || sf.checkWordSandbox)),
-          partnerID: sf.partnerID || '',
-          monthlyCard: sf.monthlyCard || '',
-          sandbox: sf.sandbox,
-          env: sf.sandbox ? 'sandbox' : 'production',
-        });
+        return sendJson(res, 200, statusPayload);
       }
 
       if (pathname === `${basePath}/api/parse` && req.method === 'POST') {

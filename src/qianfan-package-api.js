@@ -138,7 +138,7 @@ function isAuthOrSignFailure(status, json, text) {
 
 
 
-async function requestPackageDetail(url, headers) {
+async function requestPackageDetail(url, headers, signal) {
 
   const res = await fetch(url, {
 
@@ -146,7 +146,7 @@ async function requestPackageDetail(url, headers) {
 
     headers,
 
-    signal: AbortSignal.timeout(8000),
+    signal: signal || AbortSignal.timeout(8000),
 
   });
 
@@ -172,7 +172,7 @@ async function requestPackageDetail(url, headers) {
 
 
 
-async function fetchPackageDetailByCookie(packageId, cookie) {
+async function fetchPackageDetailByCookie(packageId, cookie, signal) {
 
   const pid = String(packageId || '').trim();
 
@@ -196,7 +196,7 @@ async function fetchPackageDetailByCookie(packageId, cookie) {
 
     try {
 
-      const tokenTry = await requestPackageDetail(url, tokenHeaders);
+      const tokenTry = await requestPackageDetail(url, tokenHeaders, signal);
 
       if (tokenTry.ok) {
 
@@ -260,7 +260,7 @@ async function fetchPackageDetailByCookie(packageId, cookie) {
 
   try {
 
-    const signedTry = await requestPackageDetail(url, signed.headers);
+    const signedTry = await requestPackageDetail(url, signed.headers, signal);
 
     if (signedTry.ok) {
 
@@ -300,7 +300,7 @@ async function fetchPackageDetailByCookie(packageId, cookie) {
 
 
 
-async function fetchReturnsV3ByCookie(returnsId, cookie, packageId) {
+async function fetchReturnsV3ByCookie(returnsId, cookie, packageId, signal) {
 
   const rid = String(returnsId || '').trim();
 
@@ -330,7 +330,7 @@ async function fetchReturnsV3ByCookie(returnsId, cookie, packageId) {
 
     try {
 
-      const tokenTry = await requestPackageDetail(url, tokenHeaders);
+      const tokenTry = await requestPackageDetail(url, tokenHeaders, signal);
 
       if (tokenTry.ok) {
 
@@ -394,7 +394,7 @@ async function fetchReturnsV3ByCookie(returnsId, cookie, packageId) {
 
   try {
 
-    const signedTry = await requestPackageDetail(url, signed.headers);
+    const signedTry = await requestPackageDetail(url, signed.headers, signal);
 
     if (signedTry.ok) {
 

@@ -1,20 +1,11 @@
 /**
  * Strict shop identity resolution — no fuzzy substring matching.
  */
+const { loadShopRegistry } = require('./shop-registry');
 
-const SHOP_ROWS = [
-  { shopKey: 'xyxiangyu', shopName: 'XY祥钰珠宝', aliases: ['XY祥钰珠宝', 'XY祥钰', 'xy祥钰'] },
-  { shopKey: 'xiangyu', shopName: '祥钰珠宝', aliases: ['祥钰珠宝'] },
-  { shopKey: 'hetianyayu', shopName: '和田雅玉', aliases: ['和田雅玉'] },
-  { shopKey: 'shiyuju', shopName: '拾玉居和田玉', aliases: ['拾玉居和田玉', '拾玉居'] },
-];
-
-const SHOP_ID_TO_KEY = {
-  xyxiangyu: 'xyxiangyu',
-  xiangyu: 'xiangyu',
-  hetianyayu: 'hetianyayu',
-  shiyuju: 'shiyuju',
-};
+function getRegistry() {
+  return loadShopRegistry();
+}
 
 function normalizeShopTitle(title) {
   return String(title || '')
@@ -28,15 +19,20 @@ function normalizeShopTitle(title) {
 
 function resolveShopTitleFromKey(shopKey) {
   const key = String(shopKey || '').trim();
-  const row = SHOP_ROWS.find((r) => r.shopKey === key);
-  return row?.shopName || key;
+  const row = getRegistry().rows.find((r) => r.shopKey === key);
+  return row?.shopName || '';
+}
+
+function isRegisteredShopKey(shopKey) {
+  const key = String(shopKey || '').trim();
+  return getRegistry().rows.some((r) => r.shopKey === key);
 }
 
 function resolveShopFromTitle(pageTitle) {
   const norm = normalizeShopTitle(pageTitle);
   if (!norm) return { ok: false, error: 'unknown_shop', errorCode: 'unknown_shop' };
 
-  const ordered = [...SHOP_ROWS].sort((a, b) => b.shopName.length - a.shopName.length);
+  const ordered = [...getRegistry().rows].sort((a, b) => b.shopName.length - a.shopName.length);
   for (const row of ordered) {
     const names = [row.shopName, ...(row.aliases || [])];
     for (const name of names) {
@@ -49,9 +45,10 @@ function resolveShopFromTitle(pageTitle) {
 }
 
 function resolveShopFromId(shopId) {
-  const id = String(shopId || '').trim().toLowerCase();
+  const id = String(shopId || '').trim();
   if (!id) return null;
-  const key = SHOP_ID_TO_KEY[id] || (SHOP_ROWS.some((r) => r.shopKey === id) ? id : '');
+  const reg = getRegistry();
+  const key = reg.accountIdToKey.get(id);
   if (!key) return null;
   return { ok: true, shopKey: key, shopTitle: resolveShopTitleFromKey(key) };
 }
@@ -61,12 +58,15 @@ function validateShopIdentity(input = {}) {
   const shopTitle = String(input.shopTitle || input.title || '').trim();
   const shopId = String(input.shopId || '').trim();
 
+  if (shopKey && !isRegisteredShopKey(shopKey)) {
+    return { ok: false, error: 'unknown_shop', errorCode: 'unknown_shop' };
+  }
+
   const resolved = new Map();
 
   if (shopKey) {
-    const row = SHOP_ROWS.find((r) => r.shopKey === shopKey);
-    if (row) resolved.set('shopKey', { shopKey: row.shopKey, shopTitle: row.shopName });
-    else resolved.set('shopKey', { shopKey, shopTitle: shopKey });
+    const row = getRegistry().rows.find((r) => r.shopKey === shopKey);
+    resolved.set('shopKey', { shopKey: row.shopKey, shopTitle: row.shopName });
   }
   if (shopTitle) {
     const fromTitle = resolveShopFromTitle(shopTitle);
@@ -85,34 +85,32 @@ function validateShopIdentity(input = {}) {
   }
 
   const keys = new Set();
-  const titles = new Set();
   for (const v of resolved.values()) {
     if (v.error) continue;
     keys.add(v.shopKey);
-    titles.add(v.shopTitle);
   }
 
   if (keys.size > 1) {
     return { ok: false, error: 'shop_identity_conflict', errorCode: 'shop_identity_conflict' };
   }
-  if (resolved.get('shopTitle')?.error && shopKey) {
-    const row = SHOP_ROWS.find((r) => r.shopKey === shopKey);
-    const expected = row?.shopName || '';
+
+  if (shopKey && shopTitle) {
+    const row = getRegistry().rows.find((r) => r.shopKey === shopKey);
     const fromTitle = resolveShopFromTitle(shopTitle);
     if (fromTitle.ok && fromTitle.shopKey !== shopKey) {
       return { ok: false, error: 'shop_identity_conflict', errorCode: 'shop_identity_conflict' };
     }
-    if (shopTitle && expected && normalizeShopTitle(shopTitle) !== normalizeShopTitle(expected)) {
-      return { ok: false, error: 'shop_identity_conflict', errorCode: 'shop_identity_conflict' };
+    if (row && normalizeShopTitle(shopTitle) !== normalizeShopTitle(row.shopName)) {
+      const aliasHit = (row.aliases || []).some((a) => normalizeShopTitle(a) === normalizeShopTitle(shopTitle));
+      if (!aliasHit && !fromTitle.ok) {
+        return { ok: false, error: 'shop_identity_conflict', errorCode: 'shop_identity_conflict' };
+      }
     }
   }
 
   if (keys.size === 1) {
     const key = [...keys][0];
     return { ok: true, shopKey: key, shopTitle: resolveShopTitleFromKey(key) };
-  }
-  if (shopKey) {
-    return { ok: true, shopKey, shopTitle: resolveShopTitleFromKey(shopKey) };
   }
   if (shopTitle) {
     const fromTitle = resolveShopFromTitle(shopTitle);
@@ -123,10 +121,13 @@ function validateShopIdentity(input = {}) {
 }
 
 module.exports = {
-  SHOP_ROWS,
+  get SHOP_ROWS() {
+    return getRegistry().rows;
+  },
   normalizeShopTitle,
   resolveShopFromTitle,
   resolveShopFromId,
   resolveShopTitleFromKey,
   validateShopIdentity,
+  isRegisteredShopKey,
 };

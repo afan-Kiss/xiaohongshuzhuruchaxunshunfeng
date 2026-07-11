@@ -1,4 +1,4 @@
-const VERSION = '3.0.1';
+const VERSION = '3.0.2';
 const SERVICE = 'qf-sf-data-core';
 
 function createRuntimeState(options = {}) {
@@ -16,10 +16,18 @@ function createRuntimeState(options = {}) {
     coreReady: false,
     packageApiReady: false,
     afterSaleReady: false,
+    sfConfigured: false,
     sfReady: false,
     devtoolsConnected: false,
     pageInjectionReady: false,
     webReady: false,
+  };
+  let sfMeta = {
+    sfLastQueryOK: null,
+    sfLastError: null,
+    sfLastErrorCode: null,
+    sfLastSuccessAt: null,
+    sfLastFailureAt: null,
   };
 
   function setDevtools(patch) {
@@ -36,8 +44,29 @@ function createRuntimeState(options = {}) {
 
   function setFlags(patch) {
     flags = { ...flags, ...patch };
-    if (patch.sfConfigReady != null && patch.sfReady == null) {
-      flags.sfReady = Boolean(patch.sfConfigReady);
+    if (patch.sfConfigReady != null && patch.sfConfigured == null) {
+      flags.sfConfigured = Boolean(patch.sfConfigReady);
+    }
+    if (patch.webPortConflict) {
+      flags.webReady = false;
+    }
+  }
+
+  function setSfQueryResult(result = {}) {
+    const ok = Boolean(result.ok);
+    const at = Date.now();
+    if (ok) {
+      sfMeta.sfLastQueryOK = true;
+      sfMeta.sfLastError = null;
+      sfMeta.sfLastErrorCode = null;
+      sfMeta.sfLastSuccessAt = at;
+      flags.sfReady = true;
+    } else if (result.attempted) {
+      sfMeta.sfLastQueryOK = false;
+      sfMeta.sfLastError = result.error || null;
+      sfMeta.sfLastErrorCode = result.errorCode || null;
+      sfMeta.sfLastFailureAt = at;
+      flags.sfReady = false;
     }
   }
 
@@ -46,11 +75,24 @@ function createRuntimeState(options = {}) {
     const degradedReasons = [];
 
     const coreOk = flags.coreReady && flags.packageApiReady && flags.afterSaleReady;
-    if (!flags.sfReady) degradedReasons.push('sf_config_missing');
+    if (!flags.sfConfigured) degradedReasons.push('sf_config_missing');
+    else if (sfMeta.sfLastQueryOK === false) {
+      const code = sfMeta.sfLastErrorCode || '';
+      if (code === 'auth_error' || /A1006|签名/.test(sfMeta.sfLastError || '')) {
+        degradedReasons.push('sf_auth_error');
+      } else {
+        degradedReasons.push('sf_upstream_error');
+      }
+    } else if (sfMeta.sfLastQueryOK === null && flags.sfConfigured) {
+      degradedReasons.push('sf_unverified');
+    }
     if (!flags.devtoolsConnected) degradedReasons.push('devtools_offline');
     if (devtools.pageCount === 0) degradedReasons.push('no_qianfan_pages');
     else if (!flags.pageInjectionReady) degradedReasons.push('injection_incomplete');
-    if (!flags.webReady) degradedReasons.push('web_unavailable');
+    if (!flags.webReady) {
+      if (flags.webPortConflict) degradedReasons.push('web_port_conflict');
+      else degradedReasons.push('web_unavailable');
+    }
 
     let status = 'unhealthy';
     let ok = false;
@@ -76,13 +118,14 @@ function createRuntimeState(options = {}) {
       features: {
         packageDetail: flags.packageApiReady,
         afterSale: flags.afterSaleReady,
-        sfFee: flags.sfReady,
+        sfFee: flags.sfReady === true,
         batchCards: flags.coreReady,
         singleflight: true,
         persistentCache: true,
         fonts: true,
       },
       checks: { ...flags },
+      sf: { ...sfMeta },
       degradedReasons,
       devtools: { ...devtools },
       metrics: metrics || {},
@@ -96,6 +139,7 @@ function createRuntimeState(options = {}) {
     startedAt,
     setDevtools,
     setFlags,
+    setSfQueryResult,
     buildHealth,
     get flags() {
       return { ...flags };

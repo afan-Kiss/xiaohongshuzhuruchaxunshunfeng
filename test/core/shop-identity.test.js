@@ -32,6 +32,12 @@ describe('shop identity', () => {
     assert.equal(r.errorCode, 'shop_identity_conflict');
   });
 
+  it('unknown shopKey rejected', () => {
+    const r = validateShopIdentity({ shopKey: 'not-a-real-shop', shopTitle: 'XY祥钰珠宝' });
+    assert.equal(r.ok, false);
+    assert.equal(r.errorCode, 'unknown_shop');
+  });
+
   it('consistent identity passes', () => {
     const r = validateShopIdentity({
       shopKey: 'xyxiangyu',

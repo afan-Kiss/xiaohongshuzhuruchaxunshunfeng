@@ -78,7 +78,7 @@ function parseFeeResult(waybill, outer, inner) {
   };
 }
 
-async function querySfWaybillFee(waybill, cfg) {
+async function querySfWaybillFee(waybill, cfg, signal) {
   const no = String(waybill || '').trim().toUpperCase();
   if (!/^SF\d{10,}$/.test(no)) {
     return { waybill: no, ok: false, error: '非顺丰运单号（需 SF 开头）', totalFee: null };
@@ -110,7 +110,7 @@ async function querySfWaybillFee(waybill, cfg) {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
       body: body.toString(),
-      signal: AbortSignal.timeout(25000),
+      signal: signal || AbortSignal.timeout(25000),
     });
     const text = await res.text();
     let outer;

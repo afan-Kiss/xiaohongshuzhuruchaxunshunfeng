@@ -4,7 +4,13 @@
   "pollIntervalMs": 2500,
   "sfFeeWebPort": 6666,
   "packageProxyPort": 4725,
-  "dataCoreMode": "prefer-core",
+  "dataCoreMode": "core-only",
+  "shops": {
+    "xyxiangyu": { "title": "XY祥钰珠宝", "accountIds": [] },
+    "xiangyu": { "title": "祥钰珠宝", "accountIds": [] },
+    "hetianyayu": { "title": "和田雅玉", "accountIds": [] },
+    "shiyuju": { "title": "拾玉居和田玉", "accountIds": [] }
+  },
   "sf": {
     "partnerID": "",
     "checkWord": "",

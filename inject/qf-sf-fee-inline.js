@@ -2,29 +2,2304 @@
  * 千帆客服台 · 顺丰月结扣费内嵌 v3（轻量 batch 客户端）
  */
 (function qfSfFeeInlineV3() {
-  const VERSION = '3.0.1';
+  // __QSF_CLIENT_BUNDLE__
+/**
+ * Batch request controller with AbortController race safety.
+ */
+function createBatchController(options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 3000);
+  let batchAbort = null;
+  let batchCount = 0;
+  let abortCount = 0;
+
+  function cancelBatch() {
+    const ctrl = batchAbort;
+    if (!ctrl) return;
+    abortCount += 1;
+    ctrl.abort();
+    if (batchAbort === ctrl) batchAbort = null;
+  }
+
+  function getActiveController() {
+    return batchAbort;
+  }
+
+  async function runBatch(fetchFn, gen, isStale) {
+    cancelBatch();
+    const controller = new AbortController();
+    batchAbort = controller;
+    batchCount += 1;
+    const timer = setTimeout(() => {
+      if (batchAbort === controller) controller.abort();
+    }, timeoutMs);
+    try {
+      const result = await fetchFn(controller.signal);
+      if (isStale(gen)) return null;
+      return result;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        return isStale(gen) ? null : { error: '查询超时', errorCode: 'timeout' };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (batchAbort === controller) batchAbort = null;
+    }
+  }
+
+  function getStats() {
+    return { batchCount, abortCount };
+  }
+
+  return {
+    cancelBatch,
+    runBatch,
+    getActiveController,
+    getStats,
+  };
+}
+
+function parseBatchResponse(res, body) {
+  if (!res.ok) {
+    const parsed = body && typeof body === 'object' ? body : {};
+    return {
+      ok: false,
+      error: parsed.error || `HTTP ${res.status}`,
+      errorCode: parsed.errorCode || mapHttpStatus(res.status),
+      status: res.status,
+    };
+  }
+  return body;
+}
+
+function mapHttpStatus(status) {
+  if (status === 400) return 'unknown_shop';
+  if (status === 401 || status === 403) return 'auth_error';
+  if (status === 409) return 'shop_identity_conflict';
+  if (status === 503) return 'unhealthy';
+  return 'upstream_error';
+}
+
+/**
+ * Scan scheduler — ignores plugin-owned DOM mutations, coalesces concurrent scans.
+ */
+const OWN_WRAP_CLASS = 'qsf-inline-fee-wrap';
+const OWN_STYLE_ID = 'qf-sf-fee-inline-style';
+
+function isOwnNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.classList?.contains(OWN_WRAP_CLASS)) return true;
+  if (node.id === OWN_STYLE_ID) return true;
+  return Boolean(node.closest?.(`.${OWN_WRAP_CLASS}`));
+}
+
+function isOwnMutation(mutation) {
+  if (!mutation) return false;
+  const target = mutation.target;
+  if (target && isOwnNode(target)) return true;
+  if (mutation.type === 'childList') {
+    const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    if (nodes.length > 0 && nodes.every((n) => n.nodeType !== 1 || isOwnNode(n))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createScanScheduler(options = {}) {
+  const debounceMs = Number(options.debounceMs ?? 70);
+  const onScan = options.onScan || (async () => {});
+
+  let scanTimer = null;
+  let scanRunning = false;
+  let scanPending = false;
+  let scanCount = 0;
+
+  function scheduleScan(immediate = false) {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      void triggerScan();
+    }, immediate ? 0 : debounceMs);
+  }
+
+  async function triggerScan() {
+    if (scanRunning) {
+      scanPending = true;
+      return;
+    }
+    scanRunning = true;
+    scanCount += 1;
+    try {
+      await onScan();
+    } finally {
+      scanRunning = false;
+      if (scanPending) {
+        scanPending = false;
+        void triggerScan();
+      }
+    }
+  }
+
+  function handleMutations(mutations) {
+    for (const m of mutations) {
+      if (isOwnMutation(m)) continue;
+      if (m.type === 'childList') {
+        scheduleScan(false);
+        return;
+      }
+      if (m.type === 'attributes' && m.target?.closest?.('.order-card')) {
+        scheduleScan(false);
+        return;
+      }
+    }
+  }
+
+  function clearTimer() {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
+
+  function getStats() {
+    return { scanCount, scanRunning, scanPending };
+  }
+
+  return {
+    isOwnMutation,
+    scheduleScan,
+    triggerScan,
+    handleMutations,
+    clearTimer,
+    getStats,
+  };
+}
+
+/**
+ * Card render helpers — skip redundant DOM writes.
+ */
+function buildRenderFingerprint(item, packageId) {
+  if (!item) return `${packageId}:loading`;
+  return [
+    packageId,
+    item.state || item.errorCode || '',
+    item.paidAmount ?? '',
+    item.refundApplyAmount ?? '',
+    item.sfFee ?? '',
+    item.stale ? '1' : '0',
+  ].join('|');
+}
+
+function buildCardHtml(blocks, stale) {
+  const rowCls = [
+    'qsf-inline-fee-row',
+    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    stale ? 'qsf-inline-stale' : '',
+  ].filter(Boolean).join(' ');
+  const segs = blocks.map((block) => {
+    const segCls = [
+      'qsf-inline-seg',
+      block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
+      block.kind === 'refund' ? 'qsf-inline-refund' : '',
+      block.kind === 'profit' ? 'qsf-inline-profit' : '',
+    ].filter(Boolean).join(' ');
+    if (block.kind === 'profit' || !block.label) {
+      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    }
+    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+  }).join('<span class="qsf-inline-gap"></span>');
+  return `<div class="${rowCls}">${segs}</div>`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function renderCardHtml(wrap, blocks, stale, fingerprint) {
+  if (!wrap || !blocks?.length) return { rendered: false, renderCount: 0 };
+  const nextHtml = buildCardHtml(blocks, stale);
+  const fp = fingerprint || nextHtml;
+  const prevFp = wrap.__qsfFp || '';
+  if (prevFp === fp && wrap.innerHTML) {
+    return { rendered: false, renderCount: 0 };
+  }
+  if (wrap.innerHTML === nextHtml) {
+    wrap.__qsfFp = fp;
+    return { rendered: false, renderCount: 0 };
+  }
+  wrap.innerHTML = nextHtml;
+  wrap.__qsfFp = fp;
+  return { rendered: true, renderCount: 1 };
+}
+
+/**
+ * Batch request controller with AbortController race safety.
+ */
+function createBatchController(options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 3000);
+  let batchAbort = null;
+  let batchCount = 0;
+  let abortCount = 0;
+
+  function cancelBatch() {
+    const ctrl = batchAbort;
+    if (!ctrl) return;
+    abortCount += 1;
+    ctrl.abort();
+    if (batchAbort === ctrl) batchAbort = null;
+  }
+
+  function getActiveController() {
+    return batchAbort;
+  }
+
+  async function runBatch(fetchFn, gen, isStale) {
+    cancelBatch();
+    const controller = new AbortController();
+    batchAbort = controller;
+    batchCount += 1;
+    const timer = setTimeout(() => {
+      if (batchAbort === controller) controller.abort();
+    }, timeoutMs);
+    try {
+      const result = await fetchFn(controller.signal);
+      if (isStale(gen)) return null;
+      return result;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        return isStale(gen) ? null : { error: '查询超时', errorCode: 'timeout' };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (batchAbort === controller) batchAbort = null;
+    }
+  }
+
+  function getStats() {
+    return { batchCount, abortCount };
+  }
+
+  return {
+    cancelBatch,
+    runBatch,
+    getActiveController,
+    getStats,
+  };
+}
+
+function parseBatchResponse(res, body) {
+  if (!res.ok) {
+    const parsed = body && typeof body === 'object' ? body : {};
+    return {
+      ok: false,
+      error: parsed.error || `HTTP ${res.status}`,
+      errorCode: parsed.errorCode || mapHttpStatus(res.status),
+      status: res.status,
+    };
+  }
+  return body;
+}
+
+function mapHttpStatus(status) {
+  if (status === 400) return 'unknown_shop';
+  if (status === 401 || status === 403) return 'auth_error';
+  if (status === 409) return 'shop_identity_conflict';
+  if (status === 503) return 'unhealthy';
+  return 'upstream_error';
+}
+
+/**
+ * Scan scheduler — ignores plugin-owned DOM mutations, coalesces concurrent scans.
+ */
+const OWN_WRAP_CLASS = 'qsf-inline-fee-wrap';
+const OWN_STYLE_ID = 'qf-sf-fee-inline-style';
+
+function isOwnNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.classList?.contains(OWN_WRAP_CLASS)) return true;
+  if (node.id === OWN_STYLE_ID) return true;
+  return Boolean(node.closest?.(`.${OWN_WRAP_CLASS}`));
+}
+
+function isOwnMutation(mutation) {
+  if (!mutation) return false;
+  const target = mutation.target;
+  if (target && isOwnNode(target)) return true;
+  if (mutation.type === 'childList') {
+    const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    if (nodes.length > 0 && nodes.every((n) => n.nodeType !== 1 || isOwnNode(n))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createScanScheduler(options = {}) {
+  const debounceMs = Number(options.debounceMs ?? 70);
+  const onScan = options.onScan || (async () => {});
+
+  let scanTimer = null;
+  let scanRunning = false;
+  let scanPending = false;
+  let scanCount = 0;
+
+  function scheduleScan(immediate = false) {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      void triggerScan();
+    }, immediate ? 0 : debounceMs);
+  }
+
+  async function triggerScan() {
+    if (scanRunning) {
+      scanPending = true;
+      return;
+    }
+    scanRunning = true;
+    scanCount += 1;
+    try {
+      await onScan();
+    } finally {
+      scanRunning = false;
+      if (scanPending) {
+        scanPending = false;
+        void triggerScan();
+      }
+    }
+  }
+
+  function handleMutations(mutations) {
+    for (const m of mutations) {
+      if (isOwnMutation(m)) continue;
+      if (m.type === 'childList') {
+        scheduleScan(false);
+        return;
+      }
+      if (m.type === 'attributes' && m.target?.closest?.('.order-card')) {
+        scheduleScan(false);
+        return;
+      }
+    }
+  }
+
+  function clearTimer() {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
+
+  function getStats() {
+    return { scanCount, scanRunning, scanPending };
+  }
+
+  return {
+    isOwnMutation,
+    scheduleScan,
+    triggerScan,
+    handleMutations,
+    clearTimer,
+    getStats,
+  };
+}
+
+/**
+ * Card render helpers — skip redundant DOM writes.
+ */
+function buildRenderFingerprint(item, packageId) {
+  if (!item) return `${packageId}:loading`;
+  return [
+    packageId,
+    item.state || item.errorCode || '',
+    item.paidAmount ?? '',
+    item.refundApplyAmount ?? '',
+    item.sfFee ?? '',
+    item.stale ? '1' : '0',
+  ].join('|');
+}
+
+function buildCardHtml(blocks, stale) {
+  const rowCls = [
+    'qsf-inline-fee-row',
+    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    stale ? 'qsf-inline-stale' : '',
+  ].filter(Boolean).join(' ');
+  const segs = blocks.map((block) => {
+    const segCls = [
+      'qsf-inline-seg',
+      block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
+      block.kind === 'refund' ? 'qsf-inline-refund' : '',
+      block.kind === 'profit' ? 'qsf-inline-profit' : '',
+    ].filter(Boolean).join(' ');
+    if (block.kind === 'profit' || !block.label) {
+      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    }
+    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+  }).join('<span class="qsf-inline-gap"></span>');
+  return `<div class="${rowCls}">${segs}</div>`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function renderCardHtml(wrap, blocks, stale, fingerprint) {
+  if (!wrap || !blocks?.length) return { rendered: false, renderCount: 0 };
+  const nextHtml = buildCardHtml(blocks, stale);
+  const fp = fingerprint || nextHtml;
+  const prevFp = wrap.__qsfFp || '';
+  if (prevFp === fp && wrap.innerHTML) {
+    return { rendered: false, renderCount: 0 };
+  }
+  if (wrap.innerHTML === nextHtml) {
+    wrap.__qsfFp = fp;
+    return { rendered: false, renderCount: 0 };
+  }
+  wrap.innerHTML = nextHtml;
+  wrap.__qsfFp = fp;
+  return { rendered: true, renderCount: 1 };
+}
+
+/**
+ * Batch request controller with AbortController race safety.
+ */
+function createBatchController(options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 3000);
+  let batchAbort = null;
+  let batchCount = 0;
+  let abortCount = 0;
+
+  function cancelBatch() {
+    const ctrl = batchAbort;
+    if (!ctrl) return;
+    abortCount += 1;
+    ctrl.abort();
+    if (batchAbort === ctrl) batchAbort = null;
+  }
+
+  function getActiveController() {
+    return batchAbort;
+  }
+
+  async function runBatch(fetchFn, gen, isStale) {
+    cancelBatch();
+    const controller = new AbortController();
+    batchAbort = controller;
+    batchCount += 1;
+    const timer = setTimeout(() => {
+      if (batchAbort === controller) controller.abort();
+    }, timeoutMs);
+    try {
+      const result = await fetchFn(controller.signal);
+      if (isStale(gen)) return null;
+      return result;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        return isStale(gen) ? null : { error: '查询超时', errorCode: 'timeout' };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (batchAbort === controller) batchAbort = null;
+    }
+  }
+
+  function getStats() {
+    return { batchCount, abortCount };
+  }
+
+  return {
+    cancelBatch,
+    runBatch,
+    getActiveController,
+    getStats,
+  };
+}
+
+function parseBatchResponse(res, body) {
+  if (!res.ok) {
+    const parsed = body && typeof body === 'object' ? body : {};
+    return {
+      ok: false,
+      error: parsed.error || `HTTP ${res.status}`,
+      errorCode: parsed.errorCode || mapHttpStatus(res.status),
+      status: res.status,
+    };
+  }
+  return body;
+}
+
+function mapHttpStatus(status) {
+  if (status === 400) return 'unknown_shop';
+  if (status === 401 || status === 403) return 'auth_error';
+  if (status === 409) return 'shop_identity_conflict';
+  if (status === 503) return 'unhealthy';
+  return 'upstream_error';
+}
+
+/**
+ * Scan scheduler — ignores plugin-owned DOM mutations, coalesces concurrent scans.
+ */
+const OWN_WRAP_CLASS = 'qsf-inline-fee-wrap';
+const OWN_STYLE_ID = 'qf-sf-fee-inline-style';
+
+function isOwnNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.classList?.contains(OWN_WRAP_CLASS)) return true;
+  if (node.id === OWN_STYLE_ID) return true;
+  return Boolean(node.closest?.(`.${OWN_WRAP_CLASS}`));
+}
+
+function isOwnMutation(mutation) {
+  if (!mutation) return false;
+  const target = mutation.target;
+  if (target && isOwnNode(target)) return true;
+  if (mutation.type === 'childList') {
+    const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    if (nodes.length > 0 && nodes.every((n) => n.nodeType !== 1 || isOwnNode(n))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createScanScheduler(options = {}) {
+  const debounceMs = Number(options.debounceMs ?? 70);
+  const onScan = options.onScan || (async () => {});
+
+  let scanTimer = null;
+  let scanRunning = false;
+  let scanPending = false;
+  let scanCount = 0;
+
+  function scheduleScan(immediate = false) {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      void triggerScan();
+    }, immediate ? 0 : debounceMs);
+  }
+
+  async function triggerScan() {
+    if (scanRunning) {
+      scanPending = true;
+      return;
+    }
+    scanRunning = true;
+    scanCount += 1;
+    try {
+      await onScan();
+    } finally {
+      scanRunning = false;
+      if (scanPending) {
+        scanPending = false;
+        void triggerScan();
+      }
+    }
+  }
+
+  function handleMutations(mutations) {
+    for (const m of mutations) {
+      if (isOwnMutation(m)) continue;
+      if (m.type === 'childList') {
+        scheduleScan(false);
+        return;
+      }
+      if (m.type === 'attributes' && m.target?.closest?.('.order-card')) {
+        scheduleScan(false);
+        return;
+      }
+    }
+  }
+
+  function clearTimer() {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
+
+  function getStats() {
+    return { scanCount, scanRunning, scanPending };
+  }
+
+  return {
+    isOwnMutation,
+    scheduleScan,
+    triggerScan,
+    handleMutations,
+    clearTimer,
+    getStats,
+  };
+}
+
+/**
+ * Card render helpers — skip redundant DOM writes.
+ */
+function buildRenderFingerprint(item, packageId) {
+  if (!item) return `${packageId}:loading`;
+  return [
+    packageId,
+    item.state || item.errorCode || '',
+    item.paidAmount ?? '',
+    item.refundApplyAmount ?? '',
+    item.sfFee ?? '',
+    item.stale ? '1' : '0',
+  ].join('|');
+}
+
+function buildCardHtml(blocks, stale) {
+  const rowCls = [
+    'qsf-inline-fee-row',
+    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    stale ? 'qsf-inline-stale' : '',
+  ].filter(Boolean).join(' ');
+  const segs = blocks.map((block) => {
+    const segCls = [
+      'qsf-inline-seg',
+      block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
+      block.kind === 'refund' ? 'qsf-inline-refund' : '',
+      block.kind === 'profit' ? 'qsf-inline-profit' : '',
+    ].filter(Boolean).join(' ');
+    if (block.kind === 'profit' || !block.label) {
+      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    }
+    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+  }).join('<span class="qsf-inline-gap"></span>');
+  return `<div class="${rowCls}">${segs}</div>`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function renderCardHtml(wrap, blocks, stale, fingerprint) {
+  if (!wrap || !blocks?.length) return { rendered: false, renderCount: 0 };
+  const nextHtml = buildCardHtml(blocks, stale);
+  const fp = fingerprint || nextHtml;
+  const prevFp = wrap.__qsfFp || '';
+  if (prevFp === fp && wrap.innerHTML) {
+    return { rendered: false, renderCount: 0 };
+  }
+  if (wrap.innerHTML === nextHtml) {
+    wrap.__qsfFp = fp;
+    return { rendered: false, renderCount: 0 };
+  }
+  wrap.innerHTML = nextHtml;
+  wrap.__qsfFp = fp;
+  return { rendered: true, renderCount: 1 };
+}
+
+/**
+ * Batch request controller with AbortController race safety.
+ */
+function createBatchController(options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 3000);
+  let batchAbort = null;
+  let batchCount = 0;
+  let abortCount = 0;
+
+  function cancelBatch() {
+    const ctrl = batchAbort;
+    if (!ctrl) return;
+    abortCount += 1;
+    ctrl.abort();
+    if (batchAbort === ctrl) batchAbort = null;
+  }
+
+  function getActiveController() {
+    return batchAbort;
+  }
+
+  async function runBatch(fetchFn, gen, isStale) {
+    cancelBatch();
+    const controller = new AbortController();
+    batchAbort = controller;
+    batchCount += 1;
+    const timer = setTimeout(() => {
+      if (batchAbort === controller) controller.abort();
+    }, timeoutMs);
+    try {
+      const result = await fetchFn(controller.signal);
+      if (isStale(gen)) return null;
+      return result;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        return isStale(gen) ? null : { error: '查询超时', errorCode: 'timeout' };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (batchAbort === controller) batchAbort = null;
+    }
+  }
+
+  function getStats() {
+    return { batchCount, abortCount };
+  }
+
+  return {
+    cancelBatch,
+    runBatch,
+    getActiveController,
+    getStats,
+  };
+}
+
+function parseBatchResponse(res, body) {
+  if (!res.ok) {
+    const parsed = body && typeof body === 'object' ? body : {};
+    return {
+      ok: false,
+      error: parsed.error || `HTTP ${res.status}`,
+      errorCode: parsed.errorCode || mapHttpStatus(res.status),
+      status: res.status,
+    };
+  }
+  return body;
+}
+
+function mapHttpStatus(status) {
+  if (status === 400) return 'unknown_shop';
+  if (status === 401 || status === 403) return 'auth_error';
+  if (status === 409) return 'shop_identity_conflict';
+  if (status === 503) return 'unhealthy';
+  return 'upstream_error';
+}
+
+/**
+ * Scan scheduler — ignores plugin-owned DOM mutations, coalesces concurrent scans.
+ */
+const OWN_WRAP_CLASS = 'qsf-inline-fee-wrap';
+const OWN_STYLE_ID = 'qf-sf-fee-inline-style';
+
+function isOwnNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.classList?.contains(OWN_WRAP_CLASS)) return true;
+  if (node.id === OWN_STYLE_ID) return true;
+  return Boolean(node.closest?.(`.${OWN_WRAP_CLASS}`));
+}
+
+function isOwnMutation(mutation) {
+  if (!mutation) return false;
+  const target = mutation.target;
+  if (target && isOwnNode(target)) return true;
+  if (mutation.type === 'childList') {
+    const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    if (nodes.length > 0 && nodes.every((n) => n.nodeType !== 1 || isOwnNode(n))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createScanScheduler(options = {}) {
+  const debounceMs = Number(options.debounceMs ?? 70);
+  const onScan = options.onScan || (async () => {});
+
+  let scanTimer = null;
+  let scanRunning = false;
+  let scanPending = false;
+  let scanCount = 0;
+
+  function scheduleScan(immediate = false) {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      void triggerScan();
+    }, immediate ? 0 : debounceMs);
+  }
+
+  async function triggerScan() {
+    if (scanRunning) {
+      scanPending = true;
+      return;
+    }
+    scanRunning = true;
+    scanCount += 1;
+    try {
+      await onScan();
+    } finally {
+      scanRunning = false;
+      if (scanPending) {
+        scanPending = false;
+        void triggerScan();
+      }
+    }
+  }
+
+  function handleMutations(mutations) {
+    for (const m of mutations) {
+      if (isOwnMutation(m)) continue;
+      if (m.type === 'childList') {
+        scheduleScan(false);
+        return;
+      }
+      if (m.type === 'attributes' && m.target?.closest?.('.order-card')) {
+        scheduleScan(false);
+        return;
+      }
+    }
+  }
+
+  function clearTimer() {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
+
+  function getStats() {
+    return { scanCount, scanRunning, scanPending };
+  }
+
+  return {
+    isOwnMutation,
+    scheduleScan,
+    triggerScan,
+    handleMutations,
+    clearTimer,
+    getStats,
+  };
+}
+
+/**
+ * Card render helpers — skip redundant DOM writes.
+ */
+function buildRenderFingerprint(item, packageId) {
+  if (!item) return `${packageId}:loading`;
+  return [
+    packageId,
+    item.state || item.errorCode || '',
+    item.paidAmount ?? '',
+    item.refundApplyAmount ?? '',
+    item.sfFee ?? '',
+    item.stale ? '1' : '0',
+  ].join('|');
+}
+
+function buildCardHtml(blocks, stale) {
+  const rowCls = [
+    'qsf-inline-fee-row',
+    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    stale ? 'qsf-inline-stale' : '',
+  ].filter(Boolean).join(' ');
+  const segs = blocks.map((block) => {
+    const segCls = [
+      'qsf-inline-seg',
+      block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
+      block.kind === 'refund' ? 'qsf-inline-refund' : '',
+      block.kind === 'profit' ? 'qsf-inline-profit' : '',
+    ].filter(Boolean).join(' ');
+    if (block.kind === 'profit' || !block.label) {
+      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    }
+    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+  }).join('<span class="qsf-inline-gap"></span>');
+  return `<div class="${rowCls}">${segs}</div>`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function renderCardHtml(wrap, blocks, stale, fingerprint) {
+  if (!wrap || !blocks?.length) return { rendered: false, renderCount: 0 };
+  const nextHtml = buildCardHtml(blocks, stale);
+  const fp = fingerprint || nextHtml;
+  const prevFp = wrap.__qsfFp || '';
+  if (prevFp === fp && wrap.innerHTML) {
+    return { rendered: false, renderCount: 0 };
+  }
+  if (wrap.innerHTML === nextHtml) {
+    wrap.__qsfFp = fp;
+    return { rendered: false, renderCount: 0 };
+  }
+  wrap.innerHTML = nextHtml;
+  wrap.__qsfFp = fp;
+  return { rendered: true, renderCount: 1 };
+}
+
+/**
+ * Batch request controller with AbortController race safety.
+ */
+function createBatchController(options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 3000);
+  let batchAbort = null;
+  let batchCount = 0;
+  let abortCount = 0;
+
+  function cancelBatch() {
+    const ctrl = batchAbort;
+    if (!ctrl) return;
+    abortCount += 1;
+    ctrl.abort();
+    if (batchAbort === ctrl) batchAbort = null;
+  }
+
+  function getActiveController() {
+    return batchAbort;
+  }
+
+  async function runBatch(fetchFn, gen, isStale) {
+    cancelBatch();
+    const controller = new AbortController();
+    batchAbort = controller;
+    batchCount += 1;
+    const timer = setTimeout(() => {
+      if (batchAbort === controller) controller.abort();
+    }, timeoutMs);
+    try {
+      const result = await fetchFn(controller.signal);
+      if (isStale(gen)) return null;
+      return result;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        return isStale(gen) ? null : { error: '查询超时', errorCode: 'timeout' };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (batchAbort === controller) batchAbort = null;
+    }
+  }
+
+  function getStats() {
+    return { batchCount, abortCount };
+  }
+
+  return {
+    cancelBatch,
+    runBatch,
+    getActiveController,
+    getStats,
+  };
+}
+
+function parseBatchResponse(res, body) {
+  if (!res.ok) {
+    const parsed = body && typeof body === 'object' ? body : {};
+    return {
+      ok: false,
+      error: parsed.error || `HTTP ${res.status}`,
+      errorCode: parsed.errorCode || mapHttpStatus(res.status),
+      status: res.status,
+    };
+  }
+  return body;
+}
+
+function mapHttpStatus(status) {
+  if (status === 400) return 'unknown_shop';
+  if (status === 401 || status === 403) return 'auth_error';
+  if (status === 409) return 'shop_identity_conflict';
+  if (status === 503) return 'unhealthy';
+  return 'upstream_error';
+}
+
+/**
+ * Scan scheduler — ignores plugin-owned DOM mutations, coalesces concurrent scans.
+ */
+const OWN_WRAP_CLASS = 'qsf-inline-fee-wrap';
+const OWN_STYLE_ID = 'qf-sf-fee-inline-style';
+
+function isOwnNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.classList?.contains(OWN_WRAP_CLASS)) return true;
+  if (node.id === OWN_STYLE_ID) return true;
+  return Boolean(node.closest?.(`.${OWN_WRAP_CLASS}`));
+}
+
+function isOwnMutation(mutation) {
+  if (!mutation) return false;
+  const target = mutation.target;
+  if (target && isOwnNode(target)) return true;
+  if (mutation.type === 'childList') {
+    const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    if (nodes.length > 0 && nodes.every((n) => n.nodeType !== 1 || isOwnNode(n))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createScanScheduler(options = {}) {
+  const debounceMs = Number(options.debounceMs || 70);
+  const onScan = options.onScan || (async () => {});
+
+  let scanTimer = null;
+  let scanRunning = false;
+  let scanPending = false;
+  let scanCount = 0;
+
+  function scheduleScan(immediate = false) {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      void triggerScan();
+    }, immediate ? 0 : debounceMs);
+  }
+
+  async function triggerScan() {
+    if (scanRunning) {
+      scanPending = true;
+      return;
+    }
+    scanRunning = true;
+    scanCount += 1;
+    try {
+      await onScan();
+    } finally {
+      scanRunning = false;
+      if (scanPending) {
+        scanPending = false;
+        void triggerScan();
+      }
+    }
+  }
+
+  function handleMutations(mutations) {
+    for (const m of mutations) {
+      if (isOwnMutation(m)) continue;
+      if (m.type === 'childList') {
+        scheduleScan(false);
+        return;
+      }
+      if (m.type === 'attributes' && m.target?.closest?.('.order-card')) {
+        scheduleScan(false);
+        return;
+      }
+    }
+  }
+
+  function clearTimer() {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
+
+  function getStats() {
+    return { scanCount, scanRunning, scanPending };
+  }
+
+  return {
+    isOwnMutation,
+    scheduleScan,
+    triggerScan,
+    handleMutations,
+    clearTimer,
+    getStats,
+  };
+}
+
+/**
+ * Card render helpers — skip redundant DOM writes.
+ */
+function buildRenderFingerprint(item, packageId) {
+  if (!item) return `${packageId}:loading`;
+  return [
+    packageId,
+    item.state || item.errorCode || '',
+    item.paidAmount ?? '',
+    item.refundApplyAmount ?? '',
+    item.sfFee ?? '',
+    item.stale ? '1' : '0',
+  ].join('|');
+}
+
+function buildCardHtml(blocks, stale) {
+  const rowCls = [
+    'qsf-inline-fee-row',
+    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    stale ? 'qsf-inline-stale' : '',
+  ].filter(Boolean).join(' ');
+  const segs = blocks.map((block) => {
+    const segCls = [
+      'qsf-inline-seg',
+      block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
+      block.kind === 'refund' ? 'qsf-inline-refund' : '',
+      block.kind === 'profit' ? 'qsf-inline-profit' : '',
+    ].filter(Boolean).join(' ');
+    if (block.kind === 'profit' || !block.label) {
+      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    }
+    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+  }).join('<span class="qsf-inline-gap"></span>');
+  return `<div class="${rowCls}">${segs}</div>`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function renderCardHtml(wrap, blocks, stale, fingerprint) {
+  if (!wrap || !blocks?.length) return { rendered: false, renderCount: 0 };
+  const nextHtml = buildCardHtml(blocks, stale);
+  const fp = fingerprint || nextHtml;
+  const prevFp = wrap.__qsfFp || '';
+  if (prevFp === fp && wrap.innerHTML) {
+    return { rendered: false, renderCount: 0 };
+  }
+  if (wrap.innerHTML === nextHtml) {
+    wrap.__qsfFp = fp;
+    return { rendered: false, renderCount: 0 };
+  }
+  wrap.innerHTML = nextHtml;
+  wrap.__qsfFp = fp;
+  return { rendered: true, renderCount: 1 };
+}
+
+/**
+ * Batch request controller with AbortController race safety.
+ */
+function createBatchController(options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 3000);
+  let batchAbort = null;
+  let batchCount = 0;
+  let abortCount = 0;
+
+  function cancelBatch() {
+    const ctrl = batchAbort;
+    if (!ctrl) return;
+    abortCount += 1;
+    ctrl.abort();
+    if (batchAbort === ctrl) batchAbort = null;
+  }
+
+  function getActiveController() {
+    return batchAbort;
+  }
+
+  async function runBatch(fetchFn, gen, isStale) {
+    cancelBatch();
+    const controller = new AbortController();
+    batchAbort = controller;
+    batchCount += 1;
+    const timer = setTimeout(() => {
+      if (batchAbort === controller) controller.abort();
+    }, timeoutMs);
+    try {
+      const result = await fetchFn(controller.signal);
+      if (isStale(gen)) return null;
+      return result;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        return isStale(gen) ? null : { error: '查询超时', errorCode: 'timeout' };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (batchAbort === controller) batchAbort = null;
+    }
+  }
+
+  function getStats() {
+    return { batchCount, abortCount };
+  }
+
+  return {
+    cancelBatch,
+    runBatch,
+    getActiveController,
+    getStats,
+  };
+}
+
+function parseBatchResponse(res, body) {
+  if (!res.ok) {
+    const parsed = body && typeof body === 'object' ? body : {};
+    return {
+      ok: false,
+      error: parsed.error || `HTTP ${res.status}`,
+      errorCode: parsed.errorCode || mapHttpStatus(res.status),
+      status: res.status,
+    };
+  }
+  return body;
+}
+
+function mapHttpStatus(status) {
+  if (status === 400) return 'unknown_shop';
+  if (status === 401 || status === 403) return 'auth_error';
+  if (status === 409) return 'shop_identity_conflict';
+  if (status === 503) return 'unhealthy';
+  return 'upstream_error';
+}
+
+/**
+ * Scan scheduler — ignores plugin-owned DOM mutations, coalesces concurrent scans.
+ */
+const OWN_WRAP_CLASS = 'qsf-inline-fee-wrap';
+const OWN_STYLE_ID = 'qf-sf-fee-inline-style';
+
+function isOwnNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.classList?.contains(OWN_WRAP_CLASS)) return true;
+  if (node.id === OWN_STYLE_ID) return true;
+  return Boolean(node.closest?.(`.${OWN_WRAP_CLASS}`));
+}
+
+function isOwnMutation(mutation) {
+  if (!mutation) return false;
+  const target = mutation.target;
+  if (target && isOwnNode(target)) return true;
+  if (mutation.type === 'childList') {
+    const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    if (nodes.length > 0 && nodes.every((n) => n.nodeType !== 1 || isOwnNode(n))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createScanScheduler(options = {}) {
+  const debounceMs = Number(options.debounceMs || 70);
+  const onScan = options.onScan || (async () => {});
+
+  let scanTimer = null;
+  let scanRunning = false;
+  let scanPending = false;
+  let scanCount = 0;
+
+  function scheduleScan(immediate = false) {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      void triggerScan();
+    }, immediate ? 0 : debounceMs);
+  }
+
+  async function triggerScan() {
+    if (scanRunning) {
+      scanPending = true;
+      return;
+    }
+    scanRunning = true;
+    scanCount += 1;
+    try {
+      await onScan();
+    } finally {
+      scanRunning = false;
+      if (scanPending) {
+        scanPending = false;
+        void triggerScan();
+      }
+    }
+  }
+
+  function handleMutations(mutations) {
+    for (const m of mutations) {
+      if (isOwnMutation(m)) continue;
+      if (m.type === 'childList') {
+        scheduleScan(false);
+        return;
+      }
+      if (m.type === 'attributes' && m.target?.closest?.('.order-card')) {
+        scheduleScan(false);
+        return;
+      }
+    }
+  }
+
+  function clearTimer() {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
+
+  function getStats() {
+    return { scanCount, scanRunning, scanPending };
+  }
+
+  return {
+    isOwnMutation,
+    scheduleScan,
+    triggerScan,
+    handleMutations,
+    clearTimer,
+    getStats,
+  };
+}
+
+/**
+ * Card render helpers — skip redundant DOM writes.
+ */
+function buildRenderFingerprint(item, packageId) {
+  if (!item) return `${packageId}:loading`;
+  return [
+    packageId,
+    item.state || item.errorCode || '',
+    item.paidAmount ?? '',
+    item.refundApplyAmount ?? '',
+    item.sfFee ?? '',
+    item.stale ? '1' : '0',
+  ].join('|');
+}
+
+function buildCardHtml(blocks, stale) {
+  const rowCls = [
+    'qsf-inline-fee-row',
+    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    stale ? 'qsf-inline-stale' : '',
+  ].filter(Boolean).join(' ');
+  const segs = blocks.map((block) => {
+    const segCls = [
+      'qsf-inline-seg',
+      block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
+      block.kind === 'refund' ? 'qsf-inline-refund' : '',
+      block.kind === 'profit' ? 'qsf-inline-profit' : '',
+    ].filter(Boolean).join(' ');
+    if (block.kind === 'profit' || !block.label) {
+      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    }
+    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+  }).join('<span class="qsf-inline-gap"></span>');
+  return `<div class="${rowCls}">${segs}</div>`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function renderCardHtml(wrap, blocks, stale, fingerprint) {
+  if (!wrap || !blocks?.length) return { rendered: false, renderCount: 0 };
+  const nextHtml = buildCardHtml(blocks, stale);
+  const fp = fingerprint || nextHtml;
+  const prevFp = wrap.__qsfFp || '';
+  if (prevFp === fp && wrap.innerHTML) {
+    return { rendered: false, renderCount: 0 };
+  }
+  if (wrap.innerHTML === nextHtml) {
+    wrap.__qsfFp = fp;
+    return { rendered: false, renderCount: 0 };
+  }
+  wrap.innerHTML = nextHtml;
+  wrap.__qsfFp = fp;
+  return { rendered: true, renderCount: 1 };
+}
+
+/**
+ * Batch request controller with AbortController race safety.
+ */
+function createBatchController(options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 3000);
+  let batchAbort = null;
+  let batchCount = 0;
+  let abortCount = 0;
+
+  function cancelBatch() {
+    const ctrl = batchAbort;
+    if (!ctrl) return;
+    abortCount += 1;
+    ctrl.abort();
+    if (batchAbort === ctrl) batchAbort = null;
+  }
+
+  function getActiveController() {
+    return batchAbort;
+  }
+
+  async function runBatch(fetchFn, gen, isStale) {
+    cancelBatch();
+    const controller = new AbortController();
+    batchAbort = controller;
+    batchCount += 1;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const result = await fetchFn(controller.signal);
+      if (isStale(gen)) return null;
+      return result;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        return isStale(gen) ? null : { error: '查询超时', errorCode: 'timeout' };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (batchAbort === controller) batchAbort = null;
+    }
+  }
+
+  function getStats() {
+    return { batchCount, abortCount };
+  }
+
+  return {
+    cancelBatch,
+    runBatch,
+    getActiveController,
+    getStats,
+  };
+}
+
+function parseBatchResponse(res, body) {
+  if (!res.ok) {
+    const parsed = body && typeof body === 'object' ? body : {};
+    return {
+      ok: false,
+      error: parsed.error || `HTTP ${res.status}`,
+      errorCode: parsed.errorCode || mapHttpStatus(res.status),
+      status: res.status,
+    };
+  }
+  return body;
+}
+
+function mapHttpStatus(status) {
+  if (status === 400) return 'unknown_shop';
+  if (status === 401 || status === 403) return 'auth_error';
+  if (status === 409) return 'shop_identity_conflict';
+  if (status === 503) return 'unhealthy';
+  return 'upstream_error';
+}
+
+/**
+ * Scan scheduler — ignores plugin-owned DOM mutations, coalesces concurrent scans.
+ */
+const OWN_WRAP_CLASS = 'qsf-inline-fee-wrap';
+const OWN_STYLE_ID = 'qf-sf-fee-inline-style';
+
+function isOwnNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.classList?.contains(OWN_WRAP_CLASS)) return true;
+  if (node.id === OWN_STYLE_ID) return true;
+  return Boolean(node.closest?.(`.${OWN_WRAP_CLASS}`));
+}
+
+function isOwnMutation(mutation) {
+  if (!mutation) return false;
+  const target = mutation.target;
+  if (target && isOwnNode(target)) return true;
+  if (mutation.type === 'childList') {
+    const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    if (nodes.length > 0 && nodes.every((n) => n.nodeType !== 1 || isOwnNode(n))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createScanScheduler(options = {}) {
+  const debounceMs = Number(options.debounceMs || 70);
+  const onScan = options.onScan || (async () => {});
+
+  let scanTimer = null;
+  let scanRunning = false;
+  let scanPending = false;
+  let scanCount = 0;
+
+  function scheduleScan(immediate = false) {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      void triggerScan();
+    }, immediate ? 0 : debounceMs);
+  }
+
+  async function triggerScan() {
+    if (scanRunning) {
+      scanPending = true;
+      return;
+    }
+    scanRunning = true;
+    scanCount += 1;
+    try {
+      await onScan();
+    } finally {
+      scanRunning = false;
+      if (scanPending) {
+        scanPending = false;
+        void triggerScan();
+      }
+    }
+  }
+
+  function handleMutations(mutations) {
+    for (const m of mutations) {
+      if (isOwnMutation(m)) continue;
+      if (m.type === 'childList') {
+        scheduleScan(false);
+        return;
+      }
+      if (m.type === 'attributes' && m.target?.closest?.('.order-card')) {
+        scheduleScan(false);
+        return;
+      }
+    }
+  }
+
+  function clearTimer() {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
+
+  function getStats() {
+    return { scanCount, scanRunning, scanPending };
+  }
+
+  return {
+    isOwnMutation,
+    scheduleScan,
+    triggerScan,
+    handleMutations,
+    clearTimer,
+    getStats,
+  };
+}
+
+/**
+ * Card render helpers — skip redundant DOM writes.
+ */
+function buildRenderFingerprint(item, packageId) {
+  if (!item) return `${packageId}:loading`;
+  return [
+    packageId,
+    item.state || item.errorCode || '',
+    item.paidAmount ?? '',
+    item.refundApplyAmount ?? '',
+    item.sfFee ?? '',
+    item.stale ? '1' : '0',
+  ].join('|');
+}
+
+function buildCardHtml(blocks, stale) {
+  const rowCls = [
+    'qsf-inline-fee-row',
+    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    stale ? 'qsf-inline-stale' : '',
+  ].filter(Boolean).join(' ');
+  const segs = blocks.map((block) => {
+    const segCls = [
+      'qsf-inline-seg',
+      block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
+      block.kind === 'refund' ? 'qsf-inline-refund' : '',
+      block.kind === 'profit' ? 'qsf-inline-profit' : '',
+    ].filter(Boolean).join(' ');
+    if (block.kind === 'profit' || !block.label) {
+      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    }
+    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+  }).join('<span class="qsf-inline-gap"></span>');
+  return `<div class="${rowCls}">${segs}</div>`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function renderCardHtml(wrap, blocks, stale, fingerprint) {
+  if (!wrap || !blocks?.length) return { rendered: false, renderCount: 0 };
+  const nextHtml = buildCardHtml(blocks, stale);
+  const fp = fingerprint || nextHtml;
+  const prevFp = wrap.__qsfFp || '';
+  if (prevFp === fp && wrap.innerHTML) {
+    return { rendered: false, renderCount: 0 };
+  }
+  if (wrap.innerHTML === nextHtml) {
+    wrap.__qsfFp = fp;
+    return { rendered: false, renderCount: 0 };
+  }
+  wrap.innerHTML = nextHtml;
+  wrap.__qsfFp = fp;
+  return { rendered: true, renderCount: 1 };
+}
+
+/**
+ * Batch request controller with AbortController race safety.
+ */
+function createBatchController(options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 3000);
+  let batchAbort = null;
+  let batchCount = 0;
+  let abortCount = 0;
+
+  function cancelBatch() {
+    const ctrl = batchAbort;
+    if (!ctrl) return;
+    abortCount += 1;
+    ctrl.abort();
+    if (batchAbort === ctrl) batchAbort = null;
+  }
+
+  function getActiveController() {
+    return batchAbort;
+  }
+
+  async function runBatch(fetchFn, gen, isStale) {
+    cancelBatch();
+    const controller = new AbortController();
+    batchAbort = controller;
+    batchCount += 1;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const result = await fetchFn(controller.signal);
+      if (isStale(gen)) return null;
+      return result;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        return isStale(gen) ? null : { error: '查询超时', errorCode: 'timeout' };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (batchAbort === controller) batchAbort = null;
+    }
+  }
+
+  function getStats() {
+    return { batchCount, abortCount };
+  }
+
+  return {
+    cancelBatch,
+    runBatch,
+    getActiveController,
+    getStats,
+  };
+}
+
+function parseBatchResponse(res, body) {
+  if (!res.ok) {
+    const parsed = body && typeof body === 'object' ? body : {};
+    return {
+      ok: false,
+      error: parsed.error || `HTTP ${res.status}`,
+      errorCode: parsed.errorCode || mapHttpStatus(res.status),
+      status: res.status,
+    };
+  }
+  return body;
+}
+
+function mapHttpStatus(status) {
+  if (status === 400) return 'unknown_shop';
+  if (status === 401 || status === 403) return 'auth_error';
+  if (status === 409) return 'shop_identity_conflict';
+  if (status === 503) return 'unhealthy';
+  return 'upstream_error';
+}
+
+/**
+ * Scan scheduler — ignores plugin-owned DOM mutations, coalesces concurrent scans.
+ */
+const OWN_WRAP_CLASS = 'qsf-inline-fee-wrap';
+const OWN_STYLE_ID = 'qf-sf-fee-inline-style';
+
+function isOwnNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.classList?.contains(OWN_WRAP_CLASS)) return true;
+  if (node.id === OWN_STYLE_ID) return true;
+  return Boolean(node.closest?.(`.${OWN_WRAP_CLASS}`));
+}
+
+function isOwnMutation(mutation) {
+  if (!mutation) return false;
+  const target = mutation.target;
+  if (target && isOwnNode(target)) return true;
+  if (mutation.type === 'childList') {
+    const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    if (nodes.length > 0 && nodes.every((n) => n.nodeType !== 1 || isOwnNode(n))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createScanScheduler(options = {}) {
+  const debounceMs = Number(options.debounceMs || 70);
+  const onScan = options.onScan || (async () => {});
+
+  let scanTimer = null;
+  let scanRunning = false;
+  let scanPending = false;
+  let scanCount = 0;
+
+  function scheduleScan(immediate = false) {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      void triggerScan();
+    }, immediate ? 0 : debounceMs);
+  }
+
+  async function triggerScan() {
+    if (scanRunning) {
+      scanPending = true;
+      return;
+    }
+    scanRunning = true;
+    scanCount += 1;
+    try {
+      await onScan();
+    } finally {
+      scanRunning = false;
+      if (scanPending) {
+        scanPending = false;
+        void triggerScan();
+      }
+    }
+  }
+
+  function handleMutations(mutations) {
+    for (const m of mutations) {
+      if (isOwnMutation(m)) continue;
+      if (m.type === 'childList') {
+        scheduleScan(false);
+        return;
+      }
+      if (m.type === 'attributes' && m.target?.closest?.('.order-card')) {
+        scheduleScan(false);
+        return;
+      }
+    }
+  }
+
+  function clearTimer() {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
+
+  function getStats() {
+    return { scanCount, scanRunning, scanPending };
+  }
+
+  return {
+    isOwnMutation,
+    scheduleScan,
+    triggerScan,
+    handleMutations,
+    clearTimer,
+    getStats,
+  };
+}
+
+/**
+ * Card render helpers — skip redundant DOM writes.
+ */
+function buildRenderFingerprint(item, packageId) {
+  if (!item) return `${packageId}:loading`;
+  return [
+    packageId,
+    item.state || item.errorCode || '',
+    item.paidAmount ?? '',
+    item.refundApplyAmount ?? '',
+    item.sfFee ?? '',
+    item.stale ? '1' : '0',
+  ].join('|');
+}
+
+function buildCardHtml(blocks, stale) {
+  const rowCls = [
+    'qsf-inline-fee-row',
+    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    stale ? 'qsf-inline-stale' : '',
+  ].filter(Boolean).join(' ');
+  const segs = blocks.map((block) => {
+    const segCls = [
+      'qsf-inline-seg',
+      block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
+      block.kind === 'refund' ? 'qsf-inline-refund' : '',
+      block.kind === 'profit' ? 'qsf-inline-profit' : '',
+    ].filter(Boolean).join(' ');
+    if (block.kind === 'profit' || !block.label) {
+      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    }
+    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+  }).join('<span class="qsf-inline-gap"></span>');
+  return `<div class="${rowCls}">${segs}</div>`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function renderCardHtml(wrap, blocks, stale, fingerprint) {
+  if (!wrap || !blocks?.length) return { rendered: false, renderCount: 0 };
+  const nextHtml = buildCardHtml(blocks, stale);
+  const fp = fingerprint || nextHtml;
+  const prevFp = wrap.__qsfFp || '';
+  if (prevFp === fp && wrap.innerHTML) {
+    return { rendered: false, renderCount: 0 };
+  }
+  if (wrap.innerHTML === nextHtml) {
+    wrap.__qsfFp = fp;
+    return { rendered: false, renderCount: 0 };
+  }
+  wrap.innerHTML = nextHtml;
+  wrap.__qsfFp = fp;
+  return { rendered: true, renderCount: 1 };
+}
+
+/**
+ * Batch request controller with AbortController race safety.
+ */
+function createBatchController(options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 3000);
+  let batchAbort = null;
+  let batchCount = 0;
+  let abortCount = 0;
+
+  function cancelBatch() {
+    const ctrl = batchAbort;
+    if (!ctrl) return;
+    abortCount += 1;
+    ctrl.abort();
+    if (batchAbort === ctrl) batchAbort = null;
+  }
+
+  function getActiveController() {
+    return batchAbort;
+  }
+
+  async function runBatch(fetchFn, gen, isStale) {
+    cancelBatch();
+    const controller = new AbortController();
+    batchAbort = controller;
+    batchCount += 1;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const result = await fetchFn(controller.signal);
+      if (isStale(gen)) return null;
+      return result;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        return isStale(gen) ? null : { error: '查询超时', errorCode: 'timeout' };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (batchAbort === controller) batchAbort = null;
+    }
+  }
+
+  function getStats() {
+    return { batchCount, abortCount };
+  }
+
+  return {
+    cancelBatch,
+    runBatch,
+    getActiveController,
+    getStats,
+  };
+}
+
+function parseBatchResponse(res, body) {
+  if (!res.ok) {
+    const parsed = body && typeof body === 'object' ? body : {};
+    return {
+      ok: false,
+      error: parsed.error || `HTTP ${res.status}`,
+      errorCode: parsed.errorCode || mapHttpStatus(res.status),
+      status: res.status,
+    };
+  }
+  return body;
+}
+
+function mapHttpStatus(status) {
+  if (status === 400) return 'unknown_shop';
+  if (status === 401 || status === 403) return 'auth_error';
+  if (status === 409) return 'shop_identity_conflict';
+  if (status === 503) return 'unhealthy';
+  return 'upstream_error';
+}
+
+/**
+ * Scan scheduler — ignores plugin-owned DOM mutations, coalesces concurrent scans.
+ */
+const OWN_WRAP_CLASS = 'qsf-inline-fee-wrap';
+const OWN_STYLE_ID = 'qf-sf-fee-inline-style';
+
+function isOwnNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.classList?.contains(OWN_WRAP_CLASS)) return true;
+  if (node.id === OWN_STYLE_ID) return true;
+  return Boolean(node.closest?.(`.${OWN_WRAP_CLASS}`));
+}
+
+function isOwnMutation(mutation) {
+  if (!mutation) return false;
+  const target = mutation.target;
+  if (target && isOwnNode(target)) return true;
+  if (mutation.type === 'childList') {
+    const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    if (nodes.length > 0 && nodes.every((n) => n.nodeType !== 1 || isOwnNode(n))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createScanScheduler(options = {}) {
+  const debounceMs = Number(options.debounceMs || 70);
+  const onScan = options.onScan || (async () => {});
+
+  let scanTimer = null;
+  let scanRunning = false;
+  let scanPending = false;
+  let scanCount = 0;
+
+  function scheduleScan(immediate = false) {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      void triggerScan();
+    }, immediate ? 0 : debounceMs);
+  }
+
+  async function triggerScan() {
+    if (scanRunning) {
+      scanPending = true;
+      return;
+    }
+    scanRunning = true;
+    scanCount += 1;
+    try {
+      await onScan();
+    } finally {
+      scanRunning = false;
+      if (scanPending) {
+        scanPending = false;
+        void triggerScan();
+      }
+    }
+  }
+
+  function handleMutations(mutations) {
+    for (const m of mutations) {
+      if (isOwnMutation(m)) continue;
+      if (m.type === 'childList') {
+        scheduleScan(false);
+        return;
+      }
+      if (m.type === 'attributes' && m.target?.closest?.('.order-card')) {
+        scheduleScan(false);
+        return;
+      }
+    }
+  }
+
+  function clearTimer() {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
+
+  function getStats() {
+    return { scanCount, scanRunning, scanPending };
+  }
+
+  return {
+    isOwnMutation,
+    scheduleScan,
+    triggerScan,
+    handleMutations,
+    clearTimer,
+    getStats,
+  };
+}
+
+/**
+ * Card render helpers — skip redundant DOM writes.
+ */
+function buildRenderFingerprint(item, packageId) {
+  if (!item) return `${packageId}:loading`;
+  return [
+    packageId,
+    item.state || item.errorCode || '',
+    item.paidAmount ?? '',
+    item.refundApplyAmount ?? '',
+    item.sfFee ?? '',
+    item.stale ? '1' : '0',
+  ].join('|');
+}
+
+function buildCardHtml(blocks, stale) {
+  const rowCls = [
+    'qsf-inline-fee-row',
+    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    stale ? 'qsf-inline-stale' : '',
+  ].filter(Boolean).join(' ');
+  const segs = blocks.map((block) => {
+    const segCls = [
+      'qsf-inline-seg',
+      block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
+      block.kind === 'refund' ? 'qsf-inline-refund' : '',
+      block.kind === 'profit' ? 'qsf-inline-profit' : '',
+    ].filter(Boolean).join(' ');
+    if (block.kind === 'profit' || !block.label) {
+      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    }
+    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+  }).join('<span class="qsf-inline-gap"></span>');
+  return `<div class="${rowCls}">${segs}</div>`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function renderCardHtml(wrap, blocks, stale, fingerprint) {
+  if (!wrap || !blocks?.length) return { rendered: false, renderCount: 0 };
+  const nextHtml = buildCardHtml(blocks, stale);
+  const fp = fingerprint || nextHtml;
+  const prevFp = wrap.__qsfFp || '';
+  if (prevFp === fp && wrap.innerHTML) {
+    return { rendered: false, renderCount: 0 };
+  }
+  if (wrap.innerHTML === nextHtml) {
+    wrap.__qsfFp = fp;
+    return { rendered: false, renderCount: 0 };
+  }
+  wrap.innerHTML = nextHtml;
+  wrap.__qsfFp = fp;
+  return { rendered: true, renderCount: 1 };
+}
+
+/**
+ * Batch request controller with AbortController race safety.
+ */
+function createBatchController(options = {}) {
+  const timeoutMs = Number(options.timeoutMs || 3000);
+  let batchAbort = null;
+  let batchCount = 0;
+  let abortCount = 0;
+
+  function cancelBatch() {
+    const ctrl = batchAbort;
+    if (!ctrl) return;
+    abortCount += 1;
+    ctrl.abort();
+    if (batchAbort === ctrl) batchAbort = null;
+  }
+
+  function getActiveController() {
+    return batchAbort;
+  }
+
+  async function runBatch(fetchFn, gen, isStale) {
+    cancelBatch();
+    const controller = new AbortController();
+    batchAbort = controller;
+    batchCount += 1;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const result = await fetchFn(controller.signal);
+      if (isStale(gen)) return null;
+      return result;
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        return isStale(gen) ? null : { error: '查询超时', errorCode: 'timeout' };
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (batchAbort === controller) batchAbort = null;
+    }
+  }
+
+  function getStats() {
+    return { batchCount, abortCount };
+  }
+
+  return {
+    cancelBatch,
+    runBatch,
+    getActiveController,
+    getStats,
+  };
+}
+
+function parseBatchResponse(res, body) {
+  if (!res.ok) {
+    const parsed = body && typeof body === 'object' ? body : {};
+    return {
+      ok: false,
+      error: parsed.error || `HTTP ${res.status}`,
+      errorCode: parsed.errorCode || mapHttpStatus(res.status),
+      status: res.status,
+    };
+  }
+  return body;
+}
+
+function mapHttpStatus(status) {
+  if (status === 400) return 'unknown_shop';
+  if (status === 401 || status === 403) return 'auth_error';
+  if (status === 409) return 'shop_identity_conflict';
+  if (status === 503) return 'unhealthy';
+  return 'upstream_error';
+}
+
+/**
+ * Scan scheduler — ignores plugin-owned DOM mutations, coalesces concurrent scans.
+ */
+const OWN_WRAP_CLASS = 'qsf-inline-fee-wrap';
+const OWN_STYLE_ID = 'qf-sf-fee-inline-style';
+
+function isOwnNode(node) {
+  if (!node || node.nodeType !== 1) return false;
+  if (node.classList?.contains(OWN_WRAP_CLASS)) return true;
+  if (node.id === OWN_STYLE_ID) return true;
+  return Boolean(node.closest?.(`.${OWN_WRAP_CLASS}`));
+}
+
+function isOwnMutation(mutation) {
+  if (!mutation) return false;
+  const target = mutation.target;
+  if (target && isOwnNode(target)) return true;
+  if (mutation.type === 'childList') {
+    const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    if (nodes.length > 0 && nodes.every((n) => n.nodeType !== 1 || isOwnNode(n))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createScanScheduler(options = {}) {
+  const debounceMs = Number(options.debounceMs || 70);
+  const onScan = options.onScan || (async () => {});
+
+  let scanTimer = null;
+  let scanRunning = false;
+  let scanPending = false;
+  let scanCount = 0;
+
+  function scheduleScan(immediate = false) {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      void triggerScan();
+    }, immediate ? 0 : debounceMs);
+  }
+
+  async function triggerScan() {
+    if (scanRunning) {
+      scanPending = true;
+      return;
+    }
+    scanRunning = true;
+    scanCount += 1;
+    try {
+      await onScan();
+    } finally {
+      scanRunning = false;
+      if (scanPending) {
+        scanPending = false;
+        void triggerScan();
+      }
+    }
+  }
+
+  function handleMutations(mutations) {
+    for (const m of mutations) {
+      if (isOwnMutation(m)) continue;
+      if (m.type === 'childList') {
+        scheduleScan(false);
+        return;
+      }
+      if (m.type === 'attributes' && m.target?.closest?.('.order-card')) {
+        scheduleScan(false);
+        return;
+      }
+    }
+  }
+
+  function clearTimer() {
+    clearTimeout(scanTimer);
+    scanTimer = null;
+  }
+
+  function getStats() {
+    return { scanCount, scanRunning, scanPending };
+  }
+
+  return {
+    isOwnMutation,
+    scheduleScan,
+    triggerScan,
+    handleMutations,
+    clearTimer,
+    getStats,
+  };
+}
+
+/**
+ * Card render helpers — skip redundant DOM writes.
+ */
+function buildRenderFingerprint(item, packageId) {
+  if (!item) return `${packageId}:loading`;
+  return [
+    packageId,
+    item.state || item.errorCode || '',
+    item.paidAmount ?? '',
+    item.refundApplyAmount ?? '',
+    item.sfFee ?? '',
+    item.stale ? '1' : '0',
+  ].join('|');
+}
+
+function buildCardHtml(blocks, stale) {
+  const rowCls = [
+    'qsf-inline-fee-row',
+    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    stale ? 'qsf-inline-stale' : '',
+  ].filter(Boolean).join(' ');
+  const segs = blocks.map((block) => {
+    const segCls = [
+      'qsf-inline-seg',
+      block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
+      block.kind === 'refund' ? 'qsf-inline-refund' : '',
+      block.kind === 'profit' ? 'qsf-inline-profit' : '',
+    ].filter(Boolean).join(' ');
+    if (block.kind === 'profit' || !block.label) {
+      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    }
+    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+  }).join('<span class="qsf-inline-gap"></span>');
+  return `<div class="${rowCls}">${segs}</div>`;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+function renderCardHtml(wrap, blocks, stale, fingerprint) {
+  if (!wrap || !blocks?.length) return { rendered: false, renderCount: 0 };
+  const nextHtml = buildCardHtml(blocks, stale);
+  const fp = fingerprint || nextHtml;
+  const prevFp = wrap.__qsfFp || '';
+  if (prevFp === fp && wrap.innerHTML) {
+    return { rendered: false, renderCount: 0 };
+  }
+  if (wrap.innerHTML === nextHtml) {
+    wrap.__qsfFp = fp;
+    return { rendered: false, renderCount: 0 };
+  }
+  wrap.innerHTML = nextHtml;
+  wrap.__qsfFp = fp;
+  return { rendered: true, renderCount: 1 };
+}
+
+
+  const VERSION = '3.0.2';
   const STYLE_ID = 'qf-sf-fee-inline-style';
   const SCAN_DEBOUNCE_MS = 70;
   const BATCH_TIMEOUT_MS = 3000;
   const SESSION_POLL_MS = 500;
   const RENDER_CACHE_MAX = 200;
 
+  const batchCtrl = createBatchController({ timeoutMs: BATCH_TIMEOUT_MS });
+  const scanSched = createScanScheduler({
+    debounceMs: SCAN_DEBOUNCE_MS,
+    onScan: () => runScan(),
+  });
+
   const renderCache = new Map();
-  let scanTimer = null;
-  let batchAbort = null;
   let sessionGeneration = 0;
   let activeSessionKey = '';
   let sessionObs = null;
   let sessionPollTimer = null;
   let orderObs = null;
   let coreOnline = null;
+  let renderCount = 0;
 
   function normText(s) {
     return String(s || '').replace(/\s+/g, ' ').trim();
-  }
-
-  function esc(s) {
-    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
   }
 
   function proxyPort() {
@@ -51,6 +2326,17 @@
       if (raw === name) return key;
     }
     return '';
+  }
+
+  function extractPageShopId() {
+    const el = document.querySelector('[data-shop-id],[data-account-id],[data-seller-id]');
+    if (!el) return '';
+    return String(
+      el.getAttribute('data-shop-id')
+      || el.getAttribute('data-account-id')
+      || el.getAttribute('data-seller-id')
+      || '',
+    ).trim();
   }
 
   function uidFromAppCid(appCid) {
@@ -103,23 +2389,15 @@
     }
   }
 
-  function cancelBatch() {
-    if (batchAbort) {
-      batchAbort.abort();
-      batchAbort = null;
-    }
-  }
-
   function onSessionChanged(nextKey) {
     const key = String(nextKey || '').trim();
     if (!key || key === activeSessionKey) return;
     activeSessionKey = key;
     sessionGeneration += 1;
-    cancelBatch();
-    clearTimeout(scanTimer);
-    scanTimer = null;
+    batchCtrl.cancelBatch();
+    scanSched.clearTimer();
     document.querySelectorAll('.qsf-inline-fee-wrap').forEach((el) => el.remove());
-    scheduleScan(true);
+    scanSched.scheduleScan(true);
   }
 
   function syncSession() {
@@ -127,7 +2405,7 @@
     if (!key) return;
     if (!activeSessionKey) {
       activeSessionKey = key;
-      scheduleScan(true);
+      scanSched.scheduleScan(true);
       return;
     }
     if (key !== activeSessionKey) onSessionChanged(key);
@@ -198,14 +2476,6 @@
     return { card, packageId, returnsId, expressNos, hasRefund: Boolean(returnsId) };
   }
 
-  function extractReturnsId(card) {
-    return card?.__qsfSnap?.returnsId || '';
-  }
-
-  function extractExpressNos(card) {
-    return card?.__qsfSnap?.expressNos || [];
-  }
-
   function findOrderCards() {
     const cards = [...document.querySelectorAll('.order-card, [class*="order-card"]')];
     return cards.filter((c) => c.querySelector('.order-card-title-id'));
@@ -265,9 +2535,10 @@
       config_error: '顺丰月结卡未配置',
       timeout: '查询超时，稍后自动重试',
       core_offline: '数据核心未连接',
+      unhealthy: '数据核心异常',
       upstream_error: '上游接口异常',
       unknown_shop: '店铺身份无法确认',
-      shop_identity_conflict: '店铺身份无法确认',
+      shop_identity_conflict: '店铺身份冲突',
     };
     if (map[code]) return map[code];
     if (item?.error) return String(item.error);
@@ -285,54 +2556,20 @@
     else if (!(snap?.expressNos || []).some(isSfNo) && !item?.expressNos?.some(isSfNo)) feeText = '无物流单号';
     else if (item) feeText = stateText(item, 'sf');
 
-    blocks.push({
-      label: '月结费用：',
-      text: feeText,
-      kind: feeText === '…' ? 'muted' : '',
-    });
+    blocks.push({ label: '月结费用：', text: feeText, kind: feeText === '…' ? 'muted' : '' });
 
     if (showRefund) {
       let refundText = '…';
       if (item?.refundApplyAmount != null) refundText = fmtMoney(item.refundApplyAmount);
       else if (item) refundText = stateText(item, 'refund');
-      blocks.push({
-        label: '用户申请退款金额：',
-        text: refundText,
-        kind: refundText === '…' ? 'muted' : 'refund',
-      });
+      blocks.push({ label: '用户申请退款金额：', text: refundText, kind: refundText === '…' ? 'muted' : 'refund' });
     }
 
     if (item?.profit != null && item.refundApplyAmount != null && item.sfFee != null) {
-      blocks.push({
-        label: '',
-        text: `赚到${fmtMoney(item.profit)}`,
-        kind: 'profit',
-      });
+      blocks.push({ label: '', text: `赚到${fmtMoney(item.profit)}`, kind: 'profit' });
     }
 
     return blocks;
-  }
-
-  function renderCardInfo(wrap, blocks, stale) {
-    if (!wrap || !blocks?.length) return;
-    const rowCls = [
-      'qsf-inline-fee-row',
-      blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
-      stale ? 'qsf-inline-stale' : '',
-    ].filter(Boolean).join(' ');
-    const segs = blocks.map((block) => {
-      const segCls = [
-        'qsf-inline-seg',
-        block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
-        block.kind === 'refund' ? 'qsf-inline-refund' : '',
-        block.kind === 'profit' ? 'qsf-inline-profit' : '',
-      ].filter(Boolean).join(' ');
-      if (block.kind === 'profit' || !block.label) {
-        return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${esc(block.text)}</span></span>`;
-      }
-      return `<span class="${segCls}"><span class="qsf-inline-fee-label">${esc(block.label)}</span><span class="qsf-inline-fee-amount">${esc(block.text)}</span></span>`;
-    }).join('<span class="qsf-inline-gap"></span>');
-    wrap.innerHTML = `<div class="${rowCls}">${segs}</div>`;
   }
 
   function paintCard(snap, item, stale) {
@@ -341,16 +2578,19 @@
     const wrap = ensureFeeWrap(card);
     const cached = renderCache.get(packageId);
     if (!item && cached?.blocks) {
-      renderCardInfo(wrap, cached.blocks, cached.stale);
+      const r = renderCardHtml(wrap, cached.blocks, cached.stale, cached.fingerprint);
+      renderCount += r.renderCount;
       return;
     }
     const blocks = item ? buildBlocks(item, snap) : [
       { label: '月结费用：', text: '…', kind: 'muted' },
       ...(hasRefund ? [{ label: '用户申请退款金额：', text: '…', kind: 'muted' }] : []),
     ];
-    renderCardInfo(wrap, blocks, stale);
+    const fingerprint = item ? buildRenderFingerprint(item, packageId) : `${packageId}:loading`;
+    const r = renderCardHtml(wrap, blocks, stale, fingerprint);
+    renderCount += r.renderCount;
     if (item) {
-      renderCache.set(packageId, { blocks, at: Date.now(), stale: Boolean(stale) });
+      renderCache.set(packageId, { blocks, at: Date.now(), stale: Boolean(stale), fingerprint });
       trimRenderCache();
     }
   }
@@ -371,33 +2611,30 @@
   async function batchFetch(snaps, shopKey, gen) {
     const title = shopTitle();
     if (!title || !snaps.length) return null;
-    cancelBatch();
-    batchAbort = new AbortController();
-    const timer = setTimeout(() => batchAbort.abort(), BATCH_TIMEOUT_MS);
+    const shopId = extractPageShopId();
     const cards = snaps.map((s) => ({
       packageId: s.packageId,
       returnsId: s.returnsId,
       expressNos: s.expressNos,
     }));
-    try {
+    const payload = { shopKey, shopTitle: title, cards };
+    if (shopId) payload.shopId = shopId;
+
+    return batchCtrl.runBatch(async (signal) => {
       const res = await fetch(`${coreBase()}/v1/cards/batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shopKey, shopTitle: title, cards }),
-        signal: batchAbort.signal,
+        body: JSON.stringify(payload),
+        signal,
       });
-      if (isSessionStale(gen)) return null;
-      if (!res.ok) return { error: `HTTP ${res.status}`, errorCode: 'upstream_error' };
-      return await res.json();
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        return isSessionStale(gen) ? null : { error: '查询超时', errorCode: 'timeout' };
+      let body = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = null;
       }
-      return { error: String(err.message || err), errorCode: 'core_offline' };
-    } finally {
-      clearTimeout(timer);
-      batchAbort = null;
-    }
+      return parseBatchResponse(res, body);
+    }, gen, isSessionStale);
   }
 
   async function runScan() {
@@ -456,25 +2693,10 @@
     }
   }
 
-  function scheduleScan(immediate) {
-    clearTimeout(scanTimer);
-    scanTimer = setTimeout(() => {
-      scanTimer = null;
-      runScan().catch(() => {});
-    }, immediate ? 0 : SCAN_DEBOUNCE_MS);
-  }
-
   function watchOrders() {
     const root = document.querySelector('.chat-content, .farmer-chat__right, [class*="message-list"]') || document.body;
     if (orderObs) orderObs.disconnect();
-    orderObs = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        if (m.type === 'childList' || (m.type === 'attributes' && m.target?.closest?.('.order-card'))) {
-          scheduleScan(false);
-          return;
-        }
-      }
-    });
+    orderObs = new MutationObserver((mutations) => scanSched.handleMutations(mutations));
     orderObs.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
   }
 
@@ -483,13 +2705,19 @@
     injectStyles();
     watchSession();
     watchOrders();
-    scheduleScan(true);
+    scanSched.scheduleScan(true);
     window.__qfSfFeeInline = {
       version: VERSION,
-      rescan: () => scheduleScan(true),
+      rescan: () => scanSched.scheduleScan(true),
       syncSession: () => syncSession(),
+      getStats: () => ({
+        ...scanSched.getStats(),
+        ...batchCtrl.getStats(),
+        renderCount,
+      }),
       destroy: () => {
-        cancelBatch();
+        batchCtrl.cancelBatch();
+        scanSched.clearTimer();
         if (orderObs) orderObs.disconnect();
         if (sessionObs) sessionObs.disconnect();
         if (sessionPollTimer) clearInterval(sessionPollTimer);

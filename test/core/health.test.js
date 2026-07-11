@@ -21,7 +21,7 @@ describe('persistence', () => {
 describe('runtime-state health', () => {
   it('builds health with required fields', () => {
     const st = createRuntimeState();
-    st.setFlags({ coreReady: true, packageApiReady: true, afterSaleReady: true, sfReady: true });
+    st.setFlags({ coreReady: true, packageApiReady: true, afterSaleReady: true, sfConfigured: true });
     st.setDevtools({ connected: true, pageCount: 2, injectedCount: 2, expectedVersion: VERSION, versions: [VERSION, VERSION] });
     const h = st.buildHealth({ cacheHitCount: 3 });
     assert.equal(h.service, SERVICE);
@@ -33,7 +33,7 @@ describe('runtime-state health', () => {
 
   it('degrades health when injection version mismatch', () => {
     const st = createRuntimeState();
-    st.setFlags({ coreReady: true, packageApiReady: true, afterSaleReady: true, sfReady: true });
+    st.setFlags({ coreReady: true, packageApiReady: true, afterSaleReady: true, sfConfigured: true });
     st.setDevtools({ connected: true, pageCount: 2, injectedCount: 2, expectedVersion: VERSION, versions: ['2.0.0', VERSION] });
     const h = st.buildHealth();
     assert.equal(h.ok, true);

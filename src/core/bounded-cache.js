@@ -132,8 +132,9 @@ function createBoundedCache(options = {}) {
       });
     }
 
-    rows.sort((a, b) => b.entry.updatedAt - a.entry.updatedAt);
-    for (const row of rows.slice(0, maxSize)) {
+    rows.sort((a, b) => a.entry.updatedAt - b.entry.updatedAt);
+    const kept = rows.slice(-maxSize);
+    for (const row of kept) {
       map.set(row.key, row.entry);
     }
   }

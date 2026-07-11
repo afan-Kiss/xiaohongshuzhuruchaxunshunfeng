@@ -51,25 +51,13 @@ function cacheKeySf(partnerID, monthlyCard, waybill) {
   return `sf:${partnerID}:${monthlyCard}:${waybill}`;
 }
 
-function withTimeout(promise, ms, label) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
-  return Promise.race([
-    promise,
-    new Promise((_, rej) => {
-      ctrl.signal.addEventListener('abort', () => {
-        const err = new Error(`${label || 'request'}_timeout`);
-        err.code = 'timeout';
-        rej(err);
-      });
-    }),
-  ]).finally(() => clearTimeout(timer));
-}
+const { runWithAbortTimeout } = require('./abort-timeout');
 
 function createDataCore(options = {}) {
   const metrics = createMetrics();
   const sf = options.sf || {};
   const testHooks = options.testHooks || {};
+  const onSfQueryResult = options.onSfQueryResult || (() => {});
   const persistPath = options.persistPath
     || path.join(options.root || process.cwd(), 'data', 'runtime', 'sf-data-core-cache.json');
   const persistence = createPersistence(persistPath);
@@ -116,9 +104,9 @@ function createDataCore(options = {}) {
     }, 100);
   }
 
-  async function getCookie(shopKey) {
-    if (testHooks.getCookie) return testHooks.getCookie(shopKey);
-    return withTimeout(getShopCookie(shopKey), TIMEOUT.cookie, 'cookie');
+  async function getCookie(shopKey, signal) {
+    if (testHooks.getCookie) return testHooks.getCookie(shopKey, signal);
+    return runWithAbortTimeout((sig) => getShopCookie(shopKey, sig), TIMEOUT.cookie, 'cookie', signal);
   }
 
   async function readCache(cache, key, metricsRef) {
@@ -179,7 +167,11 @@ function createDataCore(options = {}) {
       qianfanLimiter.schedule(shopKey, async () => {
         const loader = async () => {
           if (testHooks.fetchPackage) {
-            return testHooks.fetchPackage(shopKey, packageId);
+            return runWithAbortTimeout(
+              (signal) => testHooks.fetchPackage(shopKey, packageId, signal),
+              TIMEOUT.package,
+              'package_detail',
+            );
           }
           const cookieRes = await getCookie(shopKey);
           if (!cookieRes.ok) {
@@ -187,8 +179,8 @@ function createDataCore(options = {}) {
             err.code = 'auth_error';
             throw err;
           }
-          const detail = await withTimeout(
-            fetchPackageDetailByCookie(packageId, cookieRes.cookie),
+          const detail = await runWithAbortTimeout(
+            (signal) => fetchPackageDetailByCookie(packageId, cookieRes.cookie, signal),
             TIMEOUT.package,
             'package_detail',
           );
@@ -223,7 +215,11 @@ function createDataCore(options = {}) {
       qianfanLimiter.schedule(shopKey, async () => {
         const loader = async () => {
           if (testHooks.fetchAfterSale) {
-            return testHooks.fetchAfterSale(shopKey, returnsId, packageId);
+            return runWithAbortTimeout(
+              (signal) => testHooks.fetchAfterSale(shopKey, returnsId, packageId, signal),
+              TIMEOUT.afterSale,
+              'returns_v3',
+            );
           }
           const cookieRes = await getCookie(shopKey);
           if (!cookieRes.ok) {
@@ -231,8 +227,8 @@ function createDataCore(options = {}) {
             err.code = 'auth_error';
             throw err;
           }
-          const detail = await withTimeout(
-            fetchReturnsV3ByCookie(returnsId, cookieRes.cookie, packageId),
+          const detail = await runWithAbortTimeout(
+            (signal) => fetchReturnsV3ByCookie(returnsId, cookieRes.cookie, packageId, signal),
             TIMEOUT.afterSale,
             'returns_v3',
           );
@@ -330,7 +326,10 @@ function createDataCore(options = {}) {
         if (!force && hit.kind === 'stale') {
           metrics.inc('cacheStaleHitCount');
           if (cache.markRefreshing(key)) {
-            withTimeout(querySfWaybillFee(no, sf), TIMEOUT.sf, 'sf_fee')
+            runWithAbortTimeout((signal) => {
+              if (testHooks.fetchSfFee) return testHooks.fetchSfFee(no, sf, signal);
+              return querySfWaybillFee(no, sf, signal);
+            }, TIMEOUT.sf, 'sf_fee')
               .then((raw) => {
                 const normalized = normalizeSfFee(raw);
                 const target = normalized.errorCode ? sfErrCache : sfOkCache;
@@ -349,9 +348,15 @@ function createDataCore(options = {}) {
 
         try {
           const raw = testHooks.fetchSfFee
-            ? await testHooks.fetchSfFee(no, sf)
-            : await withTimeout(querySfWaybillFee(no, sf), TIMEOUT.sf, 'sf_fee');
+            ? await runWithAbortTimeout((signal) => testHooks.fetchSfFee(no, sf, signal), TIMEOUT.sf, 'sf_fee')
+            : await runWithAbortTimeout((signal) => querySfWaybillFee(no, sf, signal), TIMEOUT.sf, 'sf_fee');
           const normalized = normalizeSfFee(raw);
+          onSfQueryResult({
+            ok: normalized.sfFee != null && !normalized.errorCode,
+            attempted: true,
+            error: normalized.error,
+            errorCode: normalized.errorCode,
+          });
           const target = normalized.errorCode && normalized.errorCode !== 'not_found'
             ? sfErrCache
             : sfOkCache;
