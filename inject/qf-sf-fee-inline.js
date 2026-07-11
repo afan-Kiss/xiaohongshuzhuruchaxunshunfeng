@@ -3,15 +3,16 @@
  * 由 src/auto-inject.js 通过 CDP 自动注入。
  */
 (function qfSfFeeInlineBootstrap() {
-  const VERSION = '2.2.4';
+  const VERSION = '2.3.0';
   const STORAGE_KEY = 'qf_sf_fee_config_v1';
   const STYLE_ID = 'qf-sf-fee-inline-style';
   const SF_PROD = 'https://sfapi.sf-express.com/std/service';
   const SF_SBOX = 'https://sfapi-sbox.sf-express.com/std/service';
   const SF_ERR_CACHE_TTL_MS = 30 * 60 * 1000;
   const PKG_DETAIL_COOLDOWN_MS = 8000;
-  const PKG_DETAIL_HOOK_WAIT_MS = 320;
-  const SCAN_DEBOUNCE_MS = 600;
+  const PKG_DETAIL_HOOK_WAIT_MS = 100;
+  const SCAN_DEBOUNCE_MS = 80;
+  const CARD_RENDER_STALE_MS = 45 * 1000;
   const MAX_CARD_RETRY = 2;
   const MONEY_EPS = 0.005;
 
@@ -101,16 +102,9 @@
     clearCardRetryTimers();
     cardJobs.clear();
     packageDetailInflight.clear();
-    packageDetailCache.clear();
-    packageDetailFetchedAt.clear();
-    afterSaleApiCache.clear();
-    afterSaleFetchedAt.clear();
     afterSaleInflight.clear();
-    cardRenderCache.clear();
     cardRetryCount.clear();
     cardStableKeys.clear();
-    expressCache.clear();
-    sfFeeInflight.clear();
     document.querySelectorAll('.qsf-inline-fee-wrap').forEach((el) => el.remove());
   }
 
@@ -119,7 +113,7 @@
     if (!key || key === activeSessionKey) return;
     activeSessionKey = key;
     cancelSessionWork();
-    scheduleScan();
+    scheduleScan(true);
   }
 
   function syncSession() {
@@ -127,6 +121,7 @@
     if (!key) return;
     if (!activeSessionKey) {
       activeSessionKey = key;
+      scheduleScan(true);
       return;
     }
     if (key !== activeSessionKey) onSessionChanged(key);
@@ -135,7 +130,7 @@
   function watchSession() {
     syncSession();
     if (sessionPollTimer) clearInterval(sessionPollTimer);
-    sessionPollTimer = setInterval(syncSession, 600);
+    sessionPollTimer = setInterval(syncSession, 200);
     if (sessionObs) sessionObs.disconnect();
     const chatRoot = document.querySelector(
       '.chat-list, .farmer-chat__left, [class*="session-list"], [class*="chat-list"]',
@@ -334,11 +329,11 @@
   }
 
   function detailCacheKey(packageId) {
-    return `${activeSessionKey || 'none'}:${String(packageId || '').trim()}`;
+    return String(packageId || '').trim();
   }
 
   function stableKey(packageId) {
-    return `${activeSessionKey || 'none'}:${String(packageId || '').trim()}`;
+    return String(packageId || '').trim();
   }
 
   function renderCacheKey(packageId) {
@@ -540,7 +535,7 @@
   }
 
   function afterSaleCacheKey(returnsId) {
-    return `${activeSessionKey || 'none'}:${String(returnsId || '').trim()}`;
+    return String(returnsId || '').trim();
   }
 
   function extractReturnsIdFromCard(card) {
@@ -1216,6 +1211,46 @@
     wrap.innerHTML = `<div class="${rowCls}"${title ? ` title="${esc(title)}"` : ''}>${segs}</div>`;
   }
 
+  function placeholderBlocks(returnsId, hasAfterSale) {
+    return [
+      { label: '月结费用：', text: '…', kind: 'muted' },
+      ...(returnsId || hasAfterSale ? [{ label: '用户申请退款金额：', text: '…', kind: 'muted' }] : []),
+    ];
+  }
+
+  function paintCachedOrPlaceholder(wrap, packageId, returnsId, hasAfterSale) {
+    const cachedRender = cardRenderCache.get(renderCacheKey(packageId));
+    if (cachedRender?.blocks?.length) {
+      renderCardInfo(wrap, cachedRender.blocks);
+      return cachedRender;
+    }
+    renderCardInfo(wrap, placeholderBlocks(returnsId, hasAfterSale));
+    return null;
+  }
+
+  function renderCacheIsFresh(cachedRender) {
+    if (!cachedRender?.blocks?.length) return false;
+    if (cachedRender.at && Date.now() - cachedRender.at > CARD_RENDER_STALE_MS) return false;
+    const feeText = cachedRender.blocks.find((b) => b.label === '月结费用：')?.text;
+    return isFeeTextFinal(feeText);
+  }
+
+  async function querySfFeesForNos(expressNos, cfg, gen) {
+    let sfFeeTotal = null;
+    let feeFallback = null;
+    for (const no of expressNos) {
+      if (isSessionStale(gen)) return { sfFeeTotal: null, feeFallback, aborted: true };
+      const fee = await querySfWaybillFee(no, cfg);
+      if (isSessionStale(gen)) return { sfFeeTotal: null, feeFallback, aborted: true };
+      if (fee.ok && Number.isFinite(Number(fee.totalFee))) {
+        sfFeeTotal = (sfFeeTotal ?? 0) + Number(fee.totalFee);
+      } else if (!feeFallback) {
+        feeFallback = fee;
+      }
+    }
+    return { sfFeeTotal, feeFallback, aborted: false };
+  }
+
   async function refreshCard(card, opts = {}) {
     const gen = sessionGeneration;
     const silent = opts.silent === true;
@@ -1231,18 +1266,15 @@
     const cachedRender = cardRenderCache.get(renderCacheKey(packageId));
     const retryCount = cardRetryCount.get(packageId) || 0;
 
-    // 无售后订单：短暂占位，避免空白；失败时不显示 —
-    if (!silent && !cachedRender) {
-      renderCardInfo(wrap, [
-        { label: '月结费用：', text: '…', kind: 'muted' },
-        ...(returnsId || hasAfterSale ? [{ label: '用户申请退款金额：', text: '…', kind: 'muted' }] : []),
-      ]);
+    if (!wrap.querySelector('.qsf-inline-fee-row')) {
+      paintCachedOrPlaceholder(wrap, packageId, returnsId, hasAfterSale);
     }
 
     try {
       if (isSessionStale(gen)) return;
 
-      let expressNos = extractExpressFromCard(card);
+      const domExpressNos = extractExpressFromCard(card);
+      let expressNos = [...domExpressNos];
       let rawExpress = extractRawExpressFromCard(card);
       let afterSale = null;
       let paidAmount = null;
@@ -1250,7 +1282,9 @@
       const detailCk = detailCacheKey(packageId);
       const cachedDetail = packageDetailCache.get(detailCk);
       if (cachedDetail) {
-        if (cachedDetail.expressNos?.length && !expressNos.length) expressNos = cachedDetail.expressNos;
+        if (cachedDetail.expressNos?.length) {
+          expressNos = [...new Set([...expressNos, ...cachedDetail.expressNos])];
+        }
         if (cachedDetail.rawExpress && !rawExpress) rawExpress = cachedDetail.rawExpress;
         afterSale = cachedDetail.afterSale || null;
         paidAmount = cachedDetail.paidAmount ?? null;
@@ -1262,36 +1296,64 @@
         afterSale = mergeAfterSaleSources(afterSale, cachedAfterSale);
       }
 
-      let needApi = !packageDetailCache.has(detailCk) || opts.forceApi === true;
-      if (needApi && !opts.forceApi) {
-        await waitForPackageCache(packageId);
-        if (isSessionStale(gen)) return;
-        needApi = !packageDetailCache.has(detailCk);
-      }
+      const cfg = loadConfig();
+      const needApi = !packageDetailCache.has(detailCk) || opts.forceApi === true;
+      const canSkipHookWait = domExpressNos.length > 0 || packageDetailCache.has(detailCk);
 
-      if (needApi) {
-        const detail = await fetchPackageDetailFromApi(packageId, opts.forceApi === true);
-        if (isSessionStale(gen)) return;
-        if (detail?.expressNos?.length) expressNos = detail.expressNos;
-        if (detail?.rawExpress && !rawExpress) rawExpress = detail.rawExpress;
-        afterSale = mergeAfterSaleSources(afterSale, detail?.afterSale || null);
-        paidAmount = detail?.paidAmount ?? paidAmount;
-        erpStatus = detail?.erpStatus || erpStatus;
-      }
+      const sfFeePromise = domExpressNos.length
+        ? querySfFeesForNos(domExpressNos, cfg, gen)
+        : Promise.resolve({ sfFeeTotal: null, feeFallback: null, aborted: false });
 
-      if (returnsId) {
-        const returnsSale = await fetchAfterSaleFromApi(returnsId, packageId, opts.forceApi === true);
-        if (isSessionStale(gen)) return;
-        afterSale = mergeAfterSaleSources(afterSale, returnsSale);
+      const detailPromise = (async () => {
+        if (!needApi && !opts.forceApi) return cachedDetail || packageDetailCache.get(detailCk) || null;
+        if (needApi && !opts.forceApi && !canSkipHookWait) {
+          await waitForPackageCache(packageId, PKG_DETAIL_HOOK_WAIT_MS);
+          if (isSessionStale(gen)) return null;
+          const hooked = packageDetailCache.get(detailCk);
+          if (hooked) return hooked;
+        }
+        return fetchPackageDetailFromApi(packageId, opts.forceApi === true);
+      })();
+
+      const afterSalePromise = returnsId
+        ? fetchAfterSaleFromApi(returnsId, packageId, opts.forceApi === true)
+        : Promise.resolve(null);
+
+      const [detail, returnsSale, sfEarly] = await Promise.all([
+        detailPromise,
+        afterSalePromise,
+        sfFeePromise,
+      ]);
+      if (isSessionStale(gen)) return;
+
+      if (detail?.expressNos?.length) {
+        expressNos = [...new Set([...expressNos, ...detail.expressNos])];
       }
+      if (detail?.rawExpress && !rawExpress) rawExpress = detail.rawExpress;
+      afterSale = mergeAfterSaleSources(afterSale, detail?.afterSale || null);
+      afterSale = mergeAfterSaleSources(afterSale, returnsSale);
+      paidAmount = detail?.paidAmount ?? paidAmount;
+      erpStatus = detail?.erpStatus || erpStatus;
       if (!rawExpress) rawExpress = extractRawExpressFromCard(card);
       paidAmount = resolvePaidAmount(card, afterSale, { paidAmount });
 
       const blocks = [];
-      const cfg = loadConfig();
-      let sfFeeTotal = null;
-      let feeFallback = null;
+      let sfFeeTotal = sfEarly.sfFeeTotal;
+      let feeFallback = sfEarly.feeFallback;
       let feeQueryFailed = false;
+
+      const detailOnlyExpress = expressNos.filter((n) => !domExpressNos.includes(n));
+      if (!sfEarly.aborted && detailOnlyExpress.length) {
+        const late = await querySfFeesForNos(detailOnlyExpress, cfg, gen);
+        if (isSessionStale(gen)) return;
+        if (late.sfFeeTotal != null) sfFeeTotal = (sfFeeTotal ?? 0) + late.sfFeeTotal;
+        if (!feeFallback && late.feeFallback) feeFallback = late.feeFallback;
+      } else if (!sfEarly.aborted && sfFeeTotal == null && !feeFallback && !domExpressNos.length && expressNos.length) {
+        const late = await querySfFeesForNos(expressNos, cfg, gen);
+        if (isSessionStale(gen)) return;
+        sfFeeTotal = late.sfFeeTotal;
+        feeFallback = late.feeFallback;
+      }
       const detailCtx = { erpStatus };
       const noExpress = shouldShowNoExpress(card, detailCtx, expressNos, rawExpress);
       const nonSfExpress = !noExpress && isNonSfExpress(rawExpress);
@@ -1303,31 +1365,19 @@
         blocks.push({ label: '月结费用：', text: '非顺丰', kind: 'muted', title: `运单 ${rawExpress}` });
       } else if (!expressNos.length) {
         blocks.push({ label: '月结费用：', text: '无单号', kind: 'muted', title: '无顺丰运单号' });
+      } else if (sfFeeTotal != null) {
+        blocks.push({ label: '月结费用：', text: formatYuan(sfFeeTotal) });
+      } else if (feeFallback?.skipped) {
+        blocks.push({ label: '月结费用：', text: '非顺丰', kind: 'muted' });
       } else {
-        for (const no of expressNos) {
-          if (isSessionStale(gen)) return;
-          const fee = await querySfWaybillFee(no, cfg);
-          if (isSessionStale(gen)) return;
-          if (fee.ok && Number.isFinite(Number(fee.totalFee))) {
-            sfFeeTotal = (sfFeeTotal ?? 0) + Number(fee.totalFee);
-          } else if (!feeFallback) {
-            feeFallback = fee;
-          }
-        }
-        if (sfFeeTotal != null) {
-          blocks.push({ label: '月结费用：', text: formatYuan(sfFeeTotal) });
-        } else if (feeFallback?.skipped) {
-          blocks.push({ label: '月结费用：', text: '非顺丰', kind: 'muted' });
-        } else {
-          feeQueryFailed = true;
-          const giveUp = retryCount >= MAX_CARD_RETRY;
-          blocks.push({
-            label: '月结费用：',
-            text: giveUp ? '—' : '…',
-            kind: 'muted',
-            title: feeFallback?.error || (giveUp ? '查询失败' : '查询中'),
-          });
-        }
+        feeQueryFailed = true;
+        const giveUp = retryCount >= MAX_CARD_RETRY;
+        blocks.push({
+          label: '月结费用：',
+          text: giveUp ? '—' : '…',
+          kind: 'muted',
+          title: feeFallback?.error || (giveUp ? '查询失败' : '查询中'),
+        });
       }
 
       const refundApplyAmt = resolveRefundApplyAmount(afterSale);
@@ -1367,10 +1417,13 @@
       const sig = cardBlocksSig(blocks);
       const hasLoading = blocks.some((b) => b.kind === 'loading');
       if (cachedRender?.sig !== sig) {
-        cardRenderCache.set(renderCacheKey(packageId), { sig, blocks });
+        cardRenderCache.set(renderCacheKey(packageId), { sig, blocks, at: Date.now() });
         renderCardInfo(wrap, blocks);
       } else if (!wrap.querySelector('.qsf-inline-fee-row')) {
+        cardRenderCache.set(renderCacheKey(packageId), { sig, blocks, at: Date.now() });
         renderCardInfo(wrap, blocks);
+      } else {
+        cardRenderCache.set(renderCacheKey(packageId), { sig, blocks, at: cachedRender?.at || Date.now() });
       }
       if (!hasLoading && canMarkCardStable(blocks, showRefund, afterSale, returnsId)) {
         cardStableKeys.add(sk);
@@ -1393,7 +1446,7 @@
           cardRetryTimers.delete(packageId);
           if (isSessionStale(gen) || !card.isConnected) return;
           void refreshCard(card, { silent: true, forceApi: retries >= 1 });
-        }, 1800 + retries * 1200);
+        }, 700 + retries * 500);
         cardRetryTimers.set(packageId, timer);
         return;
       }
@@ -1433,20 +1486,19 @@
       const sk = stableKey(pid);
       const jobKey = `${activeSessionKey}:${pid}`;
       if (cardJobs.get(jobKey) === 'running') return;
-      const wrap = card.querySelector('.qsf-inline-fee-wrap');
+      const wrap = ensureFeeWrap(card);
+      const returnsId = extractReturnsIdFromCard(card);
+      const hasAfterSale = shouldShowRefundRow(card, null, returnsId);
       const cachedRender = cardRenderCache.get(renderCacheKey(pid));
-      if (cardStableKeys.has(sk) && wrap) {
-        const feeText = cachedRender?.blocks?.find((b) => b.label === '月结费用：')?.text;
-        if (isFeeTextFinal(feeText)) {
-          repositionFeeWrap(card, wrap);
-          return;
-        }
-        cardStableKeys.delete(sk);
+      paintCachedOrPlaceholder(wrap, pid, returnsId, hasAfterSale);
+      if (cardStableKeys.has(sk) && wrap && renderCacheIsFresh(cachedRender)) {
+        repositionFeeWrap(card, wrap);
+        return;
       }
       if (cardStableKeys.has(sk) && !wrap) {
         cardStableKeys.delete(sk);
       }
-      void refreshCard(card, { silent: Boolean(cardRenderCache.get(renderCacheKey(pid)) && wrap) });
+      void refreshCard(card, { silent: true });
     });
     for (const key of [...cardStableKeys]) {
       const pid = key.includes(':') ? key.split(':').slice(1).join(':') : key;
@@ -1458,7 +1510,13 @@
     });
   }
 
-  function scheduleScan() {
+  function scheduleScan(immediate = false) {
+    if (immediate) {
+      clearTimeout(scanTimer);
+      scanTimer = null;
+      scanOrderCards();
+      return;
+    }
     clearTimeout(scanTimer);
     scanTimer = setTimeout(() => {
       scanTimer = null;
@@ -1470,13 +1528,21 @@
     if (orderObs) orderObs.disconnect();
     const root = orderPanelRoot();
     if (!root) {
-      setTimeout(bindOrderObserver, 800);
+      setTimeout(bindOrderObserver, 400);
       return;
     }
     orderObs = new MutationObserver((mutations) => {
       for (const m of mutations) {
         if (m.type === 'childList') {
           const nodes = [...(m.addedNodes || []), ...(m.removedNodes || [])];
+          const addedCard = nodes.some((n) => {
+            if (n.nodeType !== 1) return false;
+            return n.matches?.('.order-card') || Boolean(n.querySelector?.('.order-card'));
+          });
+          if (addedCard) {
+            scheduleScan(true);
+            return;
+          }
           const relevant = nodes.some((n) => {
             if (n.nodeType !== 1) return n.parentElement && !n.parentElement.closest?.('.qsf-inline-fee-wrap');
             return !n.classList?.contains?.('qsf-inline-fee-wrap') && !n.closest?.('.qsf-inline-fee-wrap')
@@ -1496,7 +1562,7 @@
       }
     });
     orderObs.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
-    scheduleScan();
+    scheduleScan(true);
   }
 
   function ensureStyles() {
@@ -1637,7 +1703,7 @@
       if (!sessionPollTimer) watchSession();
       else syncSession();
       if (!orderObs) bindOrderObserver();
-      else scheduleScan();
+      else scheduleScan(true);
       return;
     }
     if (window.__qfSfFeeInline?.teardown) window.__qfSfFeeInline.teardown();
