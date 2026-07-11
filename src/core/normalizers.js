@@ -38,6 +38,10 @@ const YUAN_FIELDS = new Set([
   'refundFee',
   'negotiate_returns_amount',
   'origin_negotiate_returns_amount',
+  'expect_refund_fee',
+  'expectRefundFee',
+  'max_refund_amount',
+  'maxRefundAmount',
 ]);
 
 const FEN_FIELDS = new Set([
@@ -266,7 +270,34 @@ function pickPaidAmount(raw) {
   ];
   for (const [key, val] of pairs) {
     const parsed = parseFieldAmount(key, val);
-    if (parsed != null) return parsed;
+    if (parsed != null && parsed > 0) return parsed;
+  }
+  const skus = raw.sku_snapshots || raw.skuSnapshots || [];
+  if (Array.isArray(skus) && skus[0]) {
+    const skuPay = parseFieldAmount('sku_pay_amount', skus[0].sku_pay_amount ?? skus[0].skuPayAmount);
+    if (skuPay != null && skuPay > 0) return skuPay;
+  }
+  return null;
+}
+
+function pickAfterSaleFromSkus(raw) {
+  const skus = raw.sku_snapshots || raw.skuSnapshots || [];
+  if (!Array.isArray(skus) || !skus.length) return { hasAfterSale: false, afterSaleStatus: '' };
+  const sku = skus.find((s) => Number(s.return_type) > 0 || /待寄回|退货|退款|售后/.test(String(s.status_name || '')))
+    || skus[0];
+  const status = String(sku.status_name || '').trim();
+  const hasAfterSale = Number(sku.return_type) > 0 || /待寄回|退货|退款|售后/.test(status);
+  return { hasAfterSale, afterSaleStatus: status };
+}
+
+function pickNegotiateRefundAmount(raw) {
+  const list = raw.negotiate_order || raw.negotiateOrder;
+  if (!Array.isArray(list) || !list.length) return null;
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const item = list[i] || {};
+    const amt = parseFieldAmount('negotiate_returns_amount', item.negotiate_returns_amount)
+      ?? parseFieldAmount('origin_negotiate_returns_amount', item.origin_negotiate_returns_amount);
+    if (amt != null) return amt;
   }
   return null;
 }
@@ -275,9 +306,14 @@ function pickRefundApplyFromReturnsV3(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const direct = parseFieldAmount('applied_amount', raw.applied_amount)
     ?? parseFieldAmount('expected_refund_amount', raw.expected_refund_amount)
+    ?? parseFieldAmount('expect_refund_fee', raw.expect_refund_fee)
     ?? parseFieldAmount('apply_amount', raw.apply_amount)
-    ?? parseFieldAmount('applyAmount', raw.applyAmount);
+    ?? parseFieldAmount('applyAmount', raw.applyAmount)
+    ?? parseFieldAmount('refund_apply_amount', raw.refund_apply_amount)
+    ?? parseFieldAmount('refundApplyAmount', raw.refundApplyAmount);
   if (direct != null) return direct;
+  const negotiate = pickNegotiateRefundAmount(raw);
+  if (negotiate != null) return negotiate;
   const refundFee = parseFieldAmount('refund_fee', raw.refund_fee ?? raw.refundFee);
   if (refundFee != null) return refundFee;
   const sku = parseFieldAmount('applied_skus_amount_sum', raw.applied_skus_amount_sum ?? raw.appliedSkusAmountSum);
@@ -308,15 +344,34 @@ function normalizePackageDetail(data, hints = {}) {
     extractReturnsId(raw.after_sales?.[0]),
   );
 
+  const skuAfterSale = pickAfterSaleFromSkus(raw);
+
   const paidAmount = pickPaidAmount(raw);
   const refundApplyAmount = parseFieldAmount('return_amt', returnInfo?.return_amt)
+    ?? parseFieldAmount('returnAmt', returnInfo?.returnAmt)
     ?? parseFieldAmount('apply_amount', returnInfo?.apply_amount)
+    ?? parseFieldAmount('applyAmount', returnInfo?.applyAmount)
     ?? parseFieldAmount('refund_amount', returnInfo?.refund_amount)
     ?? parseFieldAmount('apply_amount', afterSale.apply_amount)
     ?? parseFieldAmount('refund_apply_amount', afterSale.refund_apply_amount);
   const refundActualAmount = parseFieldAmount('refunded_amount', returnInfo?.refunded_amount)
     ?? parseFieldAmount('refund_amount', afterSale.refund_amount)
     ?? parseFieldAmount('actual_refund_amount', afterSale.actual_refund_amount);
+  const afterSaleStatus = firstNonEmpty(
+    afterSale.status_name,
+    afterSale.status,
+    returnInfo?.status_str,
+    returnInfo?.status,
+    skuAfterSale.afterSaleStatus,
+  );
+  const hasAfterSale = Boolean(
+    skuAfterSale.hasAfterSale
+    || (Array.isArray(returnInfoRaw) && returnInfoRaw.length > 0)
+    || (returnInfo && typeof returnInfo === 'object')
+    || returnsId
+    || refundApplyAmount != null
+    || refundActualAmount != null,
+  );
 
   return {
     packageId: firstNonEmpty(hints.packageId, raw.package_id, raw.packageId),
@@ -327,7 +382,8 @@ function normalizePackageDetail(data, hints = {}) {
     paidAmount,
     refundApplyAmount,
     refundActualAmount,
-    afterSaleStatus: String(afterSale.status_name || afterSale.status || returnInfo?.status_str || returnInfo?.status || '').trim(),
+    hasAfterSale,
+    afterSaleStatus: String(afterSaleStatus || '').trim(),
     afterSaleType: String(afterSale.type || afterSale.type_name || returnInfo?.type || '').trim(),
     source: 'package_detail',
   };
@@ -345,6 +401,12 @@ function normalizeAfterSale(data, hints = {}) {
   if (!returnsId && !status && !type && refundApplyAmount == null && refundActualAmount == null) {
     return null;
   }
+  const hasAfterSale = Boolean(
+    returnsId
+    || refundApplyAmount != null
+    || refundActualAmount != null
+    || /售后|退款|退货|待寄回/.test(status),
+  );
   return {
     packageId: firstNonEmpty(hints.packageId, afterSale.package_id, raw.package_id),
     returnsId,
@@ -354,6 +416,7 @@ function normalizeAfterSale(data, hints = {}) {
     paidAmount,
     refundApplyAmount,
     refundActualAmount,
+    hasAfterSale,
     afterSaleStatus: status,
     afterSaleType: type,
     source: 'after_sale',
@@ -462,6 +525,8 @@ function mergeSfWaybillResults(results = []) {
   };
 }
 
+const { computeAfterSaleMetrics } = require('./after-sale-metrics');
+
 function mergeCardDto(parts = {}) {
   const pkg = parts.package || {};
   const after = parts.afterSale || {};
@@ -482,7 +547,9 @@ function mergeCardDto(parts = {}) {
   ].filter((p, idx, arr) => arr.findIndex((x) => x.expressNo === p.expressNo) === idx);
 
   const returnsId = firstNonEmpty(hints.returnsId, after.returnsId, pkg.returnsId);
-  const paidAmount = after.paidAmount ?? pkg.paidAmount ?? null;
+  const paidAmount = (pkg.paidAmount != null && pkg.paidAmount > 0)
+    ? pkg.paidAmount
+    : (after.paidAmount ?? pkg.paidAmount ?? null);
   const refundApplyAmount = after.refundApplyAmount ?? pkg.refundApplyAmount ?? null;
   const refundActualAmount = after.refundActualAmount ?? pkg.refundActualAmount ?? null;
   const sfFee = sf.sfFee ?? null;
@@ -496,6 +563,16 @@ function mergeCardDto(parts = {}) {
   else if (sf.state === 'partial') state = 'partial';
 
   const profit = computeProfit(paidAmount, refundApplyAmount, sfFee, sfFeeComplete);
+  const metrics = computeAfterSaleMetrics({
+    hints,
+    package: pkg,
+    afterSale: after,
+    paidAmount,
+    refundApplyAmount,
+    sfFee,
+    sfFeeComplete,
+    profit,
+  });
 
   return {
     packageId: firstNonEmpty(hints.packageId, pkg.packageId, after.packageId),
@@ -507,7 +584,8 @@ function mergeCardDto(parts = {}) {
     paidAmount,
     refundApplyAmount,
     refundActualAmount,
-    afterSaleStatus: after.afterSaleStatus || pkg.afterSaleStatus || '',
+    hasAfterSale: metrics.hasAfterSale,
+    afterSaleStatus: after.afterSaleStatus || pkg.afterSaleStatus || hints.afterSaleStatus || '',
     afterSaleType: after.afterSaleType || pkg.afterSaleType || '',
     sfFee,
     sfFeeComplete,
@@ -515,6 +593,9 @@ function mergeCardDto(parts = {}) {
     sfWaybillCount: sf.sfWaybillCount ?? (sf.sfWaybills || []).length,
     sfSuccessCount: sf.sfSuccessCount ?? 0,
     sfFailedCount: sf.sfFailedCount ?? 0,
+    netAfterRefund: metrics.netAfterRefund,
+    isFullRefund: metrics.isFullRefund,
+    warningType: metrics.warningType,
     profit,
     profitPending: !sfFeeComplete && (sf.sfWaybillCount || 0) > 0,
     state,

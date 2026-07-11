@@ -391,6 +391,8 @@ function createDataCore(options = {}) {
       shopKey,
       packageId,
       returnsId: String(card.returnsId || '').trim(),
+      hasAfterSale: Boolean(card.hasAfterSale),
+      afterSaleStatus: String(card.afterSaleStatus || '').trim(),
       expressNos: [...new Set((card.expressNos || []).map((x) => String(x || '').trim()).filter(Boolean))],
     };
 
@@ -500,9 +502,15 @@ function createDataCore(options = {}) {
     for (const c of cards) {
       const packageId = String(c.packageId || '').trim();
       if (!packageId || deduped.has(packageId)) continue;
-      const expressNos = [...new Set((c.expressNos || []).map((x) => String(x || '').trim()).filter(Boolean))];
       const returnsId = String(c.returnsId || '').trim();
-      deduped.set(packageId, { packageId, returnsId, expressNos });
+      const expressNos = [...new Set((c.expressNos || []).map((x) => String(x || '').trim()).filter(Boolean))];
+      deduped.set(packageId, {
+        packageId,
+        returnsId,
+        expressNos,
+        hasAfterSale: Boolean(c.hasAfterSale),
+        afterSaleStatus: String(c.afterSaleStatus || '').trim(),
+      });
     }
 
     metrics.inc('batchCardCount', deduped.size);

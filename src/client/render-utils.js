@@ -6,8 +6,14 @@ function buildRenderFingerprint(item, packageId) {
   return [
     packageId,
     item.state || item.errorCode || '',
+    item.hasAfterSale ? '1' : '0',
+    item.afterSaleStatus || '',
     item.paidAmount ?? '',
     item.refundApplyAmount ?? '',
+    item.refundActualAmount ?? '',
+    item.isFullRefund ? '1' : '0',
+    item.warningType || '',
+    item.profit ?? '',
     item.sfFee ?? '',
     item.sfFeeComplete === false ? 'partial' : '',
     item.sfSuccessCount ?? '',
@@ -27,6 +33,8 @@ function buildCardHtml(blocks, stale) {
       block.kind === 'muted' ? 'qsf-inline-fee-muted' : '',
       block.kind === 'refund' ? 'qsf-inline-refund' : '',
       block.kind === 'profit' ? 'qsf-inline-profit' : '',
+      block.kind === 'warn' ? 'qsf-inline-warn' : '',
+      block.kind === 'warn-full' ? 'qsf-inline-warn-full' : '',
     ].filter(Boolean).join(' ');
     if (block.kind === 'profit' || !block.label) {
       return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;

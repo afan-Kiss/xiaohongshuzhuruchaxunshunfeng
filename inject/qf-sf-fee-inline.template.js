@@ -6,7 +6,7 @@
   // __QSF_CLIENT_BUNDLE_BEGIN__
   // __QSF_CLIENT_BUNDLE_END__
 
-  const VERSION = '3.0.4';
+  const VERSION = '3.0.5';
   const STYLE_ID = 'qf-sf-fee-inline-style';
   const SCAN_DEBOUNCE_MS = 70;
   const BATCH_TIMEOUT_MS = 20000;
@@ -183,6 +183,7 @@
       .qsf-inline-fee-muted .qsf-inline-fee-amount { color: #888; font-weight: 400; }
       .qsf-inline-refund .qsf-inline-fee-amount { color: #c45656; }
       .qsf-inline-profit .qsf-inline-fee-amount { color: #2e7d32; }
+      .qsf-inline-warn .qsf-inline-fee-amount { color: #d48806; }
       .qsf-inline-warn-full .qsf-inline-fee-amount { color: #d4380d; }
       .qsf-inline-fee-loading .qsf-inline-fee-amount { color: #888; }
       .qsf-inline-stale .qsf-inline-fee-amount { opacity: 0.85; }
@@ -194,13 +195,25 @@
     return /^SF\d{10,}$/i.test(String(no || '').trim());
   }
 
+  function detectAfterSaleFromCard(card) {
+    const text = normText(card.innerText || '');
+    const pipe = text.match(/(?:退货|退款)\s*\|\s*([^|]+)/);
+    const statusText = pipe ? normText(pipe[1]) : '';
+    const hasAfterSale = /售后中|退款中|退货待寄回|待买家寄回|待商家收货|退款成功|退款完成|售后关闭|退款信息|退货\s*\|/.test(text);
+    return { hasAfterSale, statusText: statusText || (hasAfterSale ? '售后中' : '') };
+  }
+
   function extractCardSnapshot(card) {
     const packageId = card.querySelector('.order-card-title-id')?.textContent?.trim() || '';
     const innerText = card.innerText || '';
+    const innerHtml = card.innerHTML || '';
     const returnsId = (() => {
-      const m = innerText.match(/\b(R\d{10,})\b/);
-      return m ? m[1] : '';
+      const htmlR = innerHtml.match(/\b(R\d{10,})\b/);
+      if (htmlR) return htmlR[1];
+      const textR = innerText.match(/\b(R\d{10,})\b/);
+      return textR ? textR[1] : '';
     })();
+    const afterSale = detectAfterSaleFromCard(card);
     const expressNos = (() => {
       const nos = [];
       const logistics = card.querySelector('.delivery-row-logistics, .logistics-box');
@@ -216,7 +229,15 @@
       }
       return nos;
     })();
-    return { card, packageId, returnsId, expressNos, hasRefund: Boolean(returnsId) };
+    return {
+      card,
+      packageId,
+      returnsId,
+      expressNos,
+      hasAfterSale: afterSale.hasAfterSale,
+      afterSaleStatus: afterSale.statusText,
+      hasRefund: afterSale.hasAfterSale || Boolean(returnsId),
+    };
   }
 
   function findOrderCards() {
@@ -303,33 +324,11 @@
   }
 
   function buildBlocks(item, snap) {
-    const returnsId = snap?.returnsId || item?.returnsId || '';
-    const showRefund = Boolean(returnsId || item?.refundApplyAmount != null);
-    const blocks = [];
-
-    let feeText = '…';
-    const formatted = formatSfFee(item);
-    if (formatted) feeText = formatted;
-    else if (item?.errorCode === 'not_applicable') feeText = '非顺丰';
-    else if (!(snap?.expressNos || []).some(isSfNo) && !item?.expressNos?.some(isSfNo)) feeText = '无物流单号';
-    else if (item) feeText = stateText(item, 'sf');
-
-    blocks.push({ label: '月结费用：', text: feeText, kind: feeText === '…' ? 'muted' : '' });
-
-    if (showRefund) {
-      let refundText = '…';
-      if (item?.refundApplyAmount != null) refundText = fmtMoney(item.refundApplyAmount);
-      else if (item) refundText = stateText(item, 'refund');
-      blocks.push({ label: '用户申请退款金额：', text: refundText, kind: refundText === '…' ? 'muted' : 'refund' });
-    }
-
-    if (item?.profit != null && item.refundApplyAmount != null && item.sfFee != null && item.sfFeeComplete !== false) {
-      blocks.push({ label: '', text: `赚到${fmtMoney(item.profit)}`, kind: 'profit' });
-    } else if (item?.profitPending) {
-      blocks.push({ label: '', text: '利润待补全运费', kind: 'muted' });
-    }
-
-    return blocks;
+    return buildAfterSaleBlocks(item, snap, {
+      stateText,
+      formatSfFee,
+      isSfNo,
+    });
   }
 
   function paintCard(snap, item, stale) {
@@ -344,7 +343,7 @@
     }
     const blocks = item ? buildBlocks(item, snap) : [
       { label: '月结费用：', text: '…', kind: 'muted' },
-      ...(hasRefund ? [{ label: '用户申请退款金额：', text: '…', kind: 'muted' }] : []),
+      ...(snap?.hasAfterSale || snap?.hasRefund ? [{ label: '用户申请退款金额：', text: '…', kind: 'muted' }] : []),
     ];
     const fingerprint = item ? buildRenderFingerprint(item, packageId) : `${packageId}:loading`;
     const r = renderCardHtml(wrap, blocks, stale, fingerprint);
@@ -376,6 +375,8 @@
       packageId: s.packageId,
       returnsId: s.returnsId,
       expressNos: s.expressNos,
+      hasAfterSale: s.hasAfterSale,
+      afterSaleStatus: s.afterSaleStatus,
     }));
     const payload = { shopKey, shopTitle: title, cards };
     if (shopId) payload.shopId = shopId;

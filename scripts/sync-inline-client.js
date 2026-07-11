@@ -15,6 +15,7 @@ const END = '// __QSF_CLIENT_BUNDLE_END__';
 const CLIENT_FILES = [
   'batch-controller.js',
   'scan-scheduler.js',
+  'after-sale-display.js',
   'render-utils.js',
 ];
 
@@ -23,6 +24,7 @@ const EXPECTED_DECLARATIONS = [
   { pattern: /const OWN_STYLE_ID\s*=/g, name: 'const OWN_STYLE_ID' },
   { pattern: /function createBatchController\s*\(/g, name: 'function createBatchController' },
   { pattern: /function createScanScheduler\s*\(/g, name: 'function createScanScheduler' },
+  { pattern: /function buildAfterSaleBlocks\s*\(/g, name: 'function buildAfterSaleBlocks' },
   { pattern: /function renderCardHtml\s*\(/g, name: 'function renderCardHtml' },
   { pattern: /\/\/ __QSF_CLIENT_BUNDLE_BEGIN__/g, name: 'BEGIN marker' },
   { pattern: /\/\/ __QSF_CLIENT_BUNDLE_END__/g, name: 'END marker' },

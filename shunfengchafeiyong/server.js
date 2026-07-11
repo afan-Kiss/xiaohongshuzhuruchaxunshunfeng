@@ -180,8 +180,8 @@ function createServer(options = {}) {
   const legacyMode = Boolean(options.legacyMode);
   const statusPayload = options.dataCore
     ? buildWebStatusPayload({
-      version: options.webVersion || '3.0.4',
-      dataCoreVersion: options.dataCoreVersion || '3.0.4',
+      version: options.webVersion || '3.0.5',
+      dataCoreVersion: options.dataCoreVersion || '3.0.5',
       dataCoreService: 'qf-sf-data-core',
       runtimeInstanceId: options.runtimeInstanceId || '',
     })

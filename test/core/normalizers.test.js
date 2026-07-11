@@ -123,4 +123,23 @@ describe('normalizers v3.0.4', () => {
     assert.equal(dto.profit, 87);
     assert.equal(dto.sfFeeComplete, true);
   });
+
+  it('mergeCardDto prefers package paidAmount when returns_v3 pay_amount is 0', () => {
+    const retFiles = fs.readdirSync(path.join(__dirname, '..', 'fixtures', 'returns-v3'));
+    const file = retFiles.find((f) => f.includes('hetianyayu'));
+    const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'returns-v3', file), 'utf8'));
+    const after = normalizeAfterSale(raw.data, { returnsId: 'R_FIXTURE_2' });
+    assert.equal(after.paidAmount, null);
+    const dto = mergeCardDto({
+      hints: { packageId: 'P799', hasAfterSale: true },
+      package: { paidAmount: 1998, hasAfterSale: true, afterSaleStatus: '待寄回' },
+      afterSale: { ...after, refundApplyAmount: 1980 },
+      sf: mergeSfWaybillResults([{ waybill: 'SF1', sfFee: 13, errorCode: null }]),
+    });
+    assert.equal(dto.paidAmount, 1998);
+    assert.equal(dto.refundApplyAmount, 1980);
+    assert.equal(dto.profit, 5);
+    assert.equal(dto.isFullRefund, false);
+    assert.equal(dto.warningType, null);
+  });
 });
