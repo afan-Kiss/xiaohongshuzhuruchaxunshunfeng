@@ -3,7 +3,7 @@
  * 由 src/auto-inject.js 通过 CDP 自动注入。
  */
 (function qfSfFeeInlineBootstrap() {
-  const VERSION = '2.3.0';
+  const VERSION = '2.3.2';
   const STORAGE_KEY = 'qf_sf_fee_config_v1';
   const STYLE_ID = 'qf-sf-fee-inline-style';
   const SF_PROD = 'https://sfapi.sf-express.com/std/service';
@@ -540,9 +540,22 @@
 
   function extractReturnsIdFromCard(card) {
     if (!card) return '';
-    const html = card.innerHTML || '';
-    const m = html.match(/\b(R\d{10,})\b/);
-    return m ? m[1] : '';
+    const parts = [card.innerHTML, card.innerText, card.outerHTML];
+    for (const src of parts) {
+      const m = String(src || '').match(/\b(R\d{10,})\b/);
+      if (m) return m[1];
+    }
+    return '';
+  }
+
+  function resolveReturnsId(card, afterSale) {
+    return extractReturnsIdFromCard(card) || String(afterSale?.returnsId || '').trim();
+  }
+
+  function isRefundTextFinal(text) {
+    const t = String(text || '').trim();
+    if (!t || t === '…' || t === '—') return false;
+    return true;
   }
 
   function cardOrderStatusText(card, detail) {
@@ -590,7 +603,12 @@
   }
 
   function resolveRefundDisplayAmount(afterSale) {
-    return resolveRefundApplyAmount(afterSale);
+    const apply = resolveRefundApplyAmount(afterSale);
+    if (apply != null) return apply;
+    if (afterSale?.fromReturnInfo && afterSale?.refundActualAmount != null) {
+      return afterSale.refundActualAmount;
+    }
+    return null;
   }
 
   function resolvePaidAmount(card, afterSale, packageDetail) {
@@ -656,6 +674,10 @@
   function canMarkCardStable(blocks, showRefund, afterSale, returnsId) {
     const feeBlock = (blocks || []).find((b) => b.label === '月结费用：');
     if (!isFeeTextFinal(feeBlock?.text)) return false;
+    if (showRefund) {
+      const refundBlock = (blocks || []).find((b) => b.label === '用户申请退款金额：');
+      if (!isRefundTextFinal(refundBlock?.text)) return false;
+    }
     if (showRefund && isAwaitingAfterSaleApi(afterSale, returnsId)) return false;
     if (showRefund && resolveRefundApplyAmount(afterSale) == null && returnsId && !afterSale?.fetchError) {
       return false;
@@ -1013,7 +1035,12 @@
     const ck = afterSaleCacheKey(rid);
     const cached = afterSaleApiCache.get(ck);
     const lastAt = afterSaleFetchedAt.get(ck) || 0;
-    if (!force && cached && Date.now() - lastAt < PKG_DETAIL_COOLDOWN_MS) return cached;
+    if (!force && cached) {
+      const age = Date.now() - lastAt;
+      if (cached.refundApplyAmount != null && age < PKG_DETAIL_COOLDOWN_MS) return cached;
+      if (!cached.fetchError && age < PKG_DETAIL_COOLDOWN_MS) return cached;
+      if (cached.fetchError && age < 2500) return cached;
+    }
 
     if (afterSaleInflight.has(ck)) return afterSaleInflight.get(ck);
 
@@ -1218,9 +1245,9 @@
     ];
   }
 
-  function paintCachedOrPlaceholder(wrap, packageId, returnsId, hasAfterSale) {
+  function paintCachedOrPlaceholder(wrap, packageId, returnsId, hasAfterSale, card) {
     const cachedRender = cardRenderCache.get(renderCacheKey(packageId));
-    if (cachedRender?.blocks?.length) {
+    if (cachedRender?.blocks?.length && card && renderCacheIsFresh(cachedRender, card)) {
       renderCardInfo(wrap, cachedRender.blocks);
       return cachedRender;
     }
@@ -1228,11 +1255,16 @@
     return null;
   }
 
-  function renderCacheIsFresh(cachedRender) {
-    if (!cachedRender?.blocks?.length) return false;
+  function renderCacheIsFresh(cachedRender, card) {
+    if (!cachedRender?.blocks?.length || !card) return false;
     if (cachedRender.at && Date.now() - cachedRender.at > CARD_RENDER_STALE_MS) return false;
     const feeText = cachedRender.blocks.find((b) => b.label === '月结费用：')?.text;
-    return isFeeTextFinal(feeText);
+    if (!isFeeTextFinal(feeText)) return false;
+    const returnsId = extractReturnsIdFromCard(card);
+    const showRefund = shouldShowRefundRow(card, null, returnsId);
+    if (!showRefund) return true;
+    const refundText = cachedRender.blocks.find((b) => b.label === '用户申请退款金额：')?.text;
+    return isRefundTextFinal(refundText);
   }
 
   async function querySfFeesForNos(expressNos, cfg, gen) {
@@ -1261,13 +1293,13 @@
     cardJobs.set(jobKey, 'running');
 
     const wrap = ensureFeeWrap(card);
-    const returnsId = extractReturnsIdFromCard(card);
+    let returnsId = extractReturnsIdFromCard(card);
     const hasAfterSale = shouldShowRefundRow(card, null, returnsId);
     const cachedRender = cardRenderCache.get(renderCacheKey(packageId));
     const retryCount = cardRetryCount.get(packageId) || 0;
 
     if (!wrap.querySelector('.qsf-inline-fee-row')) {
-      paintCachedOrPlaceholder(wrap, packageId, returnsId, hasAfterSale);
+      paintCachedOrPlaceholder(wrap, packageId, returnsId, hasAfterSale, card);
     }
 
     try {
@@ -1332,6 +1364,13 @@
       if (detail?.rawExpress && !rawExpress) rawExpress = detail.rawExpress;
       afterSale = mergeAfterSaleSources(afterSale, detail?.afterSale || null);
       afterSale = mergeAfterSaleSources(afterSale, returnsSale);
+      returnsId = resolveReturnsId(card, afterSale);
+      if (returnsId && resolveRefundApplyAmount(afterSale) == null
+        && (!returnsSale || returnsSale?.fetchError)) {
+        const lateSale = await fetchAfterSaleFromApi(returnsId, packageId, Boolean(returnsSale?.fetchError) || opts.forceApi === true);
+        if (isSessionStale(gen)) return;
+        afterSale = mergeAfterSaleSources(afterSale, lateSale);
+      }
       paidAmount = detail?.paidAmount ?? paidAmount;
       erpStatus = detail?.erpStatus || erpStatus;
       if (!rawExpress) rawExpress = extractRawExpressFromCard(card);
@@ -1490,8 +1529,10 @@
       const returnsId = extractReturnsIdFromCard(card);
       const hasAfterSale = shouldShowRefundRow(card, null, returnsId);
       const cachedRender = cardRenderCache.get(renderCacheKey(pid));
-      paintCachedOrPlaceholder(wrap, pid, returnsId, hasAfterSale);
-      if (cardStableKeys.has(sk) && wrap && renderCacheIsFresh(cachedRender)) {
+      const refundText = cachedRender?.blocks?.find((b) => b.label === '用户申请退款金额：')?.text;
+      if (refundText === '—' && returnsId) cardStableKeys.delete(sk);
+      paintCachedOrPlaceholder(wrap, pid, returnsId, hasAfterSale, card);
+      if (cardStableKeys.has(sk) && wrap && renderCacheIsFresh(cachedRender, card)) {
         repositionFeeWrap(card, wrap);
         return;
       }
