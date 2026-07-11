@@ -16,7 +16,8 @@ describe('after-sale display v3.0.5', () => {
       { hasAfterSale: true, expressNos: ['SF1234567890123'] },
       helpers,
     );
-    assert.ok(blocks.some((b) => b.label === '用户申请退款金额：' && b.text === '…'));
+    assert.ok(blocks.some((b) => b.text === '退款查询中…'));
+    assert.ok(blocks.some((b) => b.text === '月结13.00元'));
   });
 
   it('full refund warning uses warn-full class in html', () => {
@@ -31,11 +32,12 @@ describe('after-sale display v3.0.5', () => {
     }, { hasAfterSale: true }, helpers);
     const html = buildCardHtml(blocks, false);
     assert.match(html, /qsf-inline-warn-full/);
-    assert.match(html, /全额退款，仍产生顺丰费用13\.00元，预计亏损13\.00元/);
+    assert.match(html, /⚠亏损13\.00元/);
+    assert.match(html, /title="全额退款，仍产生顺丰费用13\.00元，预计亏损13\.00元"/);
     assert.doesNotMatch(html, /赚到-13/);
   });
 
-  it('negative profit shows 预计亏损', () => {
+  it('negative profit shows compact 预计亏损', () => {
     const blocks = buildAfterSaleBlocks({
       hasAfterSale: true,
       paidAmount: 2000,
@@ -45,17 +47,16 @@ describe('after-sale display v3.0.5', () => {
       profit: -13,
       warningType: 'expected_loss',
     }, { hasAfterSale: true }, helpers);
-    assert.ok(blocks.some((b) => /预计亏损13\.00元/.test(b.text)));
+    assert.ok(blocks.some((b) => b.text === '⚠亏损13.00元'));
   });
 
-  it('refund unverified shows warning', () => {
+  it('refund unverified shows compact warning', () => {
     const blocks = buildAfterSaleBlocks({
       hasAfterSale: true,
       sfFee: 13,
       warningType: 'refund_unverified',
     }, { hasAfterSale: true }, helpers);
-    assert.ok(blocks.some((b) => b.text === '未获取'));
-    assert.ok(blocks.some((b) => /退款金额尚未核对/.test(b.text)));
+    assert.ok(blocks.some((b) => b.text === '⚠退款待核对'));
   });
 
   it('no after-sale hides refund row', () => {
@@ -63,7 +64,8 @@ describe('after-sale display v3.0.5', () => {
       hasAfterSale: false,
       sfFee: 13,
     }, { hasAfterSale: false }, helpers);
-    assert.equal(blocks.some((b) => b.label === '用户申请退款金额：'), false);
+    assert.equal(blocks.some((b) => /退款/.test(b.text)), false);
+    assert.ok(blocks.some((b) => b.text === '月结13.00元'));
   });
 
   it('sf partial failure blocks final profit', () => {
@@ -72,9 +74,18 @@ describe('after-sale display v3.0.5', () => {
       refundApplyAmount: 1998,
       sfFee: 18,
       sfFeeComplete: false,
+      sfSuccessCount: 1,
+      sfWaybillCount: 2,
+      state: 'partial',
       warningType: 'sf_fee_incomplete',
     }, { hasAfterSale: true }, helpers);
-    assert.ok(blocks.some((b) => /运费未查询完整/.test(b.text)));
+    assert.ok(blocks.some((b) => b.text === '⚠利润待核对'));
     assert.equal(blocks.some((b) => /赚到/.test(b.text)), false);
+  });
+
+  it('buildCardHtml uses inline span row', () => {
+    const html = buildCardHtml([{ text: '月结13.00元', kind: '' }], false);
+    assert.match(html, /^<span class="qsf-inline-fee-row">/);
+    assert.doesNotMatch(html, /<div class="qsf-inline-fee-row">/);
   });
 });

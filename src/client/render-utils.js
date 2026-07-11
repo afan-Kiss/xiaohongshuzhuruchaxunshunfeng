@@ -24,7 +24,7 @@ function buildRenderFingerprint(item, packageId) {
 function buildCardHtml(blocks, stale) {
   const rowCls = [
     'qsf-inline-fee-row',
-    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    blocks.some((b) => /查询中/.test(b.text)) ? 'qsf-inline-fee-loading' : '',
     stale ? 'qsf-inline-stale' : '',
   ].filter(Boolean).join(' ');
   const segs = blocks.map((block) => {
@@ -36,12 +36,11 @@ function buildCardHtml(blocks, stale) {
       block.kind === 'warn' ? 'qsf-inline-warn' : '',
       block.kind === 'warn-full' ? 'qsf-inline-warn-full' : '',
     ].filter(Boolean).join(' ');
-    if (block.kind === 'profit' || !block.label) {
-      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
-    }
-    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    const titleAttr = block.title ? ` title="${escHtml(block.title)}"` : '';
+    const text = block.text || `${block.label || ''}${block.label ? '' : ''}`;
+    return `<span class="${segCls}"${titleAttr}><span class="qsf-inline-fee-amount">${escHtml(text)}</span></span>`;
   }).join('<span class="qsf-inline-gap"></span>');
-  return `<div class="${rowCls}">${segs}</div>`;
+  return `<span class="${rowCls}">${segs}</span>`;
 }
 
 function escHtml(s) {

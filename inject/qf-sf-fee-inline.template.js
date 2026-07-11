@@ -174,17 +174,33 @@
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      .qsf-inline-fee-wrap { margin: 4px 0 6px; font-size: 12px; line-height: 1.45; }
-      .qsf-inline-fee-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 0; }
+      .qsf-inline-fee-wrap {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        min-width: 0;
+        margin: 0 10px;
+        font-size: 12px;
+        line-height: 1.4;
+        white-space: nowrap;
+        vertical-align: middle;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .qsf-inline-fee-row {
+        display: inline-flex;
+        align-items: center;
+        flex-wrap: nowrap;
+        white-space: nowrap;
+      }
       .qsf-inline-seg { display: inline-flex; align-items: baseline; white-space: nowrap; }
-      .qsf-inline-gap { display: inline-block; width: 10px; }
-      .qsf-inline-fee-label { color: #666; margin-right: 2px; }
+      .qsf-inline-gap { display: inline-block; width: 8px; }
       .qsf-inline-fee-amount { color: #1a1a1a; font-weight: 500; }
       .qsf-inline-fee-muted .qsf-inline-fee-amount { color: #888; font-weight: 400; }
       .qsf-inline-refund .qsf-inline-fee-amount { color: #c45656; }
       .qsf-inline-profit .qsf-inline-fee-amount { color: #2e7d32; }
       .qsf-inline-warn .qsf-inline-fee-amount { color: #d48806; }
-      .qsf-inline-warn-full .qsf-inline-fee-amount { color: #d4380d; }
+      .qsf-inline-warn-full .qsf-inline-fee-amount { color: #d4380d; font-weight: 600; }
       .qsf-inline-fee-loading .qsf-inline-fee-amount { color: #888; }
       .qsf-inline-stale .qsf-inline-fee-amount { opacity: 0.85; }
     `;
@@ -245,43 +261,6 @@
     return cards.filter((c) => c.querySelector('.order-card-title-id'));
   }
 
-  function findQtyAndPayAnchors(card) {
-    const scopes = [card.querySelector('.order-card-footer'), card].filter(Boolean);
-    let qtyEl = null;
-    let payEl = null;
-    for (const scope of scopes) {
-      for (const el of scope.querySelectorAll('div, span, p')) {
-        if (el.closest('.qsf-inline-fee-wrap')) continue;
-        const t = normText(el.textContent);
-        if (!t || t.length > 80) continue;
-        if (/共\s*\d+\s*件/.test(t) && !/(实付|应付)/.test(t)) qtyEl = qtyEl || el;
-        if (/(实付|应付)/.test(t) && (/[¥￥]/.test(t) || /\d/.test(t))) payEl = payEl || el;
-      }
-    }
-    return { qtyEl, payEl };
-  }
-
-  function ensureFeeWrap(card) {
-    let wrap = card.querySelector('.qsf-inline-fee-wrap');
-    if (!wrap) {
-      wrap = document.createElement('div');
-      wrap.className = 'qsf-inline-fee-wrap';
-      wrap.setAttribute('data-qsf-inline', VERSION);
-      const { qtyEl, payEl } = findQtyAndPayAnchors(card);
-      if (qtyEl && payEl && qtyEl.parentElement === payEl.parentElement) {
-        const parent = qtyEl.parentElement;
-        parent.insertBefore(wrap, qtyEl.compareDocumentPosition(payEl) & Node.DOCUMENT_POSITION_FOLLOWING ? payEl : qtyEl.nextSibling);
-      } else if (payEl?.parentElement) {
-        payEl.parentElement.insertBefore(wrap, payEl);
-      } else {
-        const header = card.querySelector('.order-card-header');
-        if (header?.parentElement) header.parentElement.insertBefore(wrap, header.nextSibling);
-        else card.appendChild(wrap);
-      }
-    }
-    return wrap;
-  }
-
   function fmtMoney(n) {
     if (n == null || !Number.isFinite(Number(n))) return null;
     return `${Number(n).toFixed(2)}元`;
@@ -315,8 +294,7 @@
       if (item.state === 'partial' || item.sfFeeComplete === false) {
         const ok = item.sfSuccessCount ?? 0;
         const all = item.sfWaybillCount ?? ok;
-        const fail = item.sfFailedCount ?? Math.max(0, all - ok);
-        if (fail > 0) return `${total}元（${ok}/${all}，另${fail}单查询失败）`;
+        if (all > ok) return `${total}元(${ok}/${all})`;
       }
       return `${total}元`;
     }
@@ -332,9 +310,10 @@
   }
 
   function paintCard(snap, item, stale) {
-    const { card, packageId, hasRefund } = snap;
+    const { card, packageId } = snap;
     if (!packageId) return;
-    const wrap = ensureFeeWrap(card);
+    const wrap = ensureFeeWrap(card, VERSION);
+    ensureFeeWrapPosition(card, wrap);
     const cached = renderCache.get(packageId);
     if (!item && cached?.blocks) {
       const r = renderCardHtml(wrap, cached.blocks, cached.stale, cached.fingerprint);
@@ -342,8 +321,10 @@
       return;
     }
     const blocks = item ? buildBlocks(item, snap) : [
-      { label: '月结费用：', text: '…', kind: 'muted' },
-      ...(snap?.hasAfterSale || snap?.hasRefund ? [{ label: '用户申请退款金额：', text: '…', kind: 'muted' }] : []),
+      { text: '月结查询中…', title: '顺丰月结费用：查询中…', kind: 'muted' },
+      ...(snap?.hasAfterSale || snap?.hasRefund
+        ? [{ text: '退款查询中…', title: '用户申请退款金额：查询中…', kind: 'muted' }]
+        : []),
     ];
     const fingerprint = item ? buildRenderFingerprint(item, packageId) : `${packageId}:loading`;
     const r = renderCardHtml(wrap, blocks, stale, fingerprint);

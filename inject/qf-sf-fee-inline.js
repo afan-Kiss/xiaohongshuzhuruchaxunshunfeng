@@ -176,7 +176,183 @@ function createScanScheduler(options = {}) {
 }
 
 /**
- * After-sale card display blocks — uses Data Core DTO fields.
+ * Place inline fee wrap between quantity and payment columns in order card footer.
+ */
+const QTY_RE = /共\s*\d+\s*件/;
+const EXCLUDE_SELECTORS = [
+  '.delivery-row-logistics',
+  '.logistics-box',
+  '.order-card-header',
+  '.sku-list',
+  '.goods-list',
+  '.goods-info',
+  '.after-sale-box',
+  '[class*="after-sale"]',
+  '[class*="logistics"]',
+];
+
+function isAmountSummaryContext(el) {
+  return Boolean(el?.closest?.('.summary, .order-card-footer, [class*="summary"]'));
+}
+
+function isPayAnchorText(t, el) {
+  if (!/(实付|应付)/.test(t) || t.length > 80) return false;
+  if (/[¥￥]/.test(t) || /\d/.test(t)) return true;
+  if (isLeafTextEl(el) && (/^实付$/.test(t) || /^应付$/.test(t))) {
+    const parentText = normText(el.parentElement?.textContent || '');
+    return /[¥￥]/.test(parentText) || /\d/.test(parentText);
+  }
+  return false;
+}
+
+function isExcluded(el, card) {
+  if (!el || !card) return true;
+  if (isAmountSummaryContext(el)) return false;
+  for (const sel of EXCLUDE_SELECTORS) {
+    if (el.closest?.(sel)) return true;
+  }
+  return false;
+}
+
+function getDirectChildUnder(row, element) {
+  let current = element;
+  while (current && current.parentElement !== row) {
+    current = current.parentElement;
+  }
+  return current || null;
+}
+
+function normText(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim();
+}
+
+function rowScore(row, card) {
+  if (!row || row === card) return -1;
+  let score = 0;
+  const cls = String(row.className || '');
+  if (/order-card-footer/i.test(cls)) score += 50;
+  if (/summary/i.test(cls)) score += 40;
+  if (/footer|amount|price|pay/i.test(cls)) score += 20;
+  let depth = 0;
+  let cur = row;
+  while (cur && cur !== card) {
+    depth += 1;
+    cur = cur.parentElement;
+  }
+  score += Math.max(0, 15 - depth);
+  return score;
+}
+
+function isLeafTextEl(el) {
+  return !el.children?.length;
+}
+
+function findAnchorElements(card) {
+  const qty = [];
+  const pay = [];
+  const nodes = card.querySelectorAll('span, div, p');
+  for (const el of nodes) {
+    if (el.closest?.('.qsf-inline-fee-wrap')) continue;
+    if (isExcluded(el, card)) continue;
+    if (!isLeafTextEl(el)) continue;
+    const t = normText(el.textContent);
+    if (!t) continue;
+    if (QTY_RE.test(t) && !/(实付|应付)/.test(t) && t.length <= 40) qty.push(el);
+    if (/实付/.test(t) && isPayAnchorText(t, el)) {
+      pay.push({ el, pri: 2 });
+    } else if (/应付/.test(t) && isPayAnchorText(t, el)) {
+      pay.push({ el, pri: 1 });
+    }
+  }
+  return { qty, pay };
+}
+
+function pickSmallestText(els) {
+  return els.reduce((best, el) => {
+    if (!best) return el;
+    const bl = normText(best.textContent).length;
+    const elLen = normText(el.textContent).length;
+    return elLen <= bl ? el : best;
+  }, null);
+}
+
+function pickBestPay(payList) {
+  if (!payList.length) return null;
+  return [...payList].sort(
+    (a, b) => b.pri - a.pri || normText(a.el.textContent).length - normText(b.el.textContent).length,
+  )[0].el;
+}
+
+function findOrderAmountRow(card) {
+  if (!card) return { row: null, qtyAnchor: null, payAnchor: null };
+  const { qty: qtyList, pay: payList } = findAnchorElements(card);
+  const qtyAnchor = pickSmallestText(qtyList);
+  const payAnchor = pickBestPay(payList);
+  if (!qtyAnchor || !payAnchor) return { row: null, qtyAnchor, payAnchor };
+
+  let candidate = payAnchor.parentElement;
+  let best = null;
+  let bestScore = -1;
+  while (candidate && candidate !== card) {
+    if (candidate.contains(qtyAnchor) && candidate.contains(payAnchor)) {
+      const qtyColumn = getDirectChildUnder(candidate, qtyAnchor);
+      const payColumn = getDirectChildUnder(candidate, payAnchor);
+      if (qtyColumn && payColumn && qtyColumn !== payColumn) {
+        const score = rowScore(candidate, card);
+        if (score > bestScore) {
+          bestScore = score;
+          best = { row: candidate, qtyAnchor, payAnchor, qtyColumn, payColumn };
+        }
+      }
+    }
+    candidate = candidate.parentElement;
+  }
+  if (best) return best;
+  return { row: null, qtyAnchor, payAnchor };
+}
+
+function isPositionCorrect(wrap, row, qtyColumn, payColumn) {
+  if (!wrap || !row || wrap.parentElement !== row) return false;
+  if (!qtyColumn || !payColumn) return false;
+  const children = [...row.children];
+  const qi = children.indexOf(qtyColumn);
+  const wi = children.indexOf(wrap);
+  const pi = children.indexOf(payColumn);
+  return qi >= 0 && wi >= 0 && pi >= 0 && qi < wi && wi < pi;
+}
+
+function ensureFeeWrapPosition(card, wrap) {
+  if (!card || !wrap) return false;
+  const { row, qtyAnchor, payAnchor } = findOrderAmountRow(card);
+  if (!row || !qtyAnchor || !payAnchor) return false;
+  const qtyColumn = getDirectChildUnder(row, qtyAnchor);
+  const payColumn = getDirectChildUnder(row, payAnchor);
+  if (!qtyColumn || !payColumn) return false;
+  if (isPositionCorrect(wrap, row, qtyColumn, payColumn)) return true;
+  row.insertBefore(wrap, payColumn);
+  return isPositionCorrect(wrap, row, qtyColumn, payColumn);
+}
+
+function ensureFeeWrap(card, version) {
+  const wraps = [...card.querySelectorAll('.qsf-inline-fee-wrap')];
+  let wrap = wraps[0] || null;
+  for (let i = 1; i < wraps.length; i += 1) wraps[i].remove();
+  if (!wrap) {
+    wrap = document.createElement('span');
+    wrap.className = 'qsf-inline-fee-wrap';
+    wrap.setAttribute('data-qsf-inline', version);
+  }
+  if (!ensureFeeWrapPosition(card, wrap)) {
+    const found = findOrderAmountRow(card);
+    if (found.row && found.payColumn) {
+      found.row.insertBefore(wrap, found.payColumn);
+    }
+  }
+  return wrap;
+}
+
+/**
+ * After-sale card display blocks — compact inline text for amount row.
  */
 const EPSILON = 0.005;
 
@@ -201,38 +377,40 @@ function buildAfterSaleBlocks(item, snap, helpers = {}) {
   else if (item?.errorCode === 'not_applicable') feeText = '非顺丰';
   else if (!(snap?.expressNos || []).some(helpers.isSfNo) && !item?.expressNos?.some(helpers.isSfNo)) feeText = '无物流单号';
   else if (item) feeText = stateText(item, 'sf');
-  blocks.push({ label: '月结费用：', text: feeText, kind: feeText === '…' ? 'muted' : '' });
+
+  const feeCompact = feeText === '…' ? '月结查询中…' : `月结${feeText}`;
+  const feeTitle = feeText === '…' ? '顺丰月结费用：查询中…' : `顺丰月结费用：${feeText}`;
+  blocks.push({
+    text: feeCompact,
+    title: feeTitle,
+    kind: feeText === '…' ? 'muted' : '',
+  });
 
   if (hasAfterSale) {
-    let refundText = '…';
+    let refundText = '退款查询中…';
+    let refundTitle = '用户申请退款金额：查询中…';
     let refundKind = 'muted';
     if (item?.refundApplyAmount != null) {
-      refundText = fmtMoney(item.refundApplyAmount);
+      refundText = `退款${fmtMoney(item.refundApplyAmount)}`;
+      refundTitle = `用户申请退款金额：${fmtMoney(item.refundApplyAmount)}`;
       refundKind = 'refund';
     } else if (item && item.warningType === 'refund_unverified') {
-      refundText = '未获取';
-      refundKind = 'refund';
-    } else if (!item || item.refundApplyAmount == null) {
-      refundText = '…';
-      refundKind = 'muted';
+      refundText = '⚠退款待核对';
+      refundTitle = '订单售后中，退款金额尚未核对';
+      refundKind = 'warn-full';
     } else if (item) {
-      refundText = stateText(item, 'refund');
+      const st = stateText(item, 'refund');
+      refundText = st === '—' ? '退款查询中…' : `退款${st}`;
+      refundTitle = `用户申请退款金额：${st}`;
       refundKind = 'muted';
     }
-    blocks.push({ label: '用户申请退款金额：', text: refundText, kind: refundKind });
-    if (item?.warningType === 'refund_unverified') {
-      blocks.push({
-        label: '',
-        text: '⚠ 订单售后中，退款金额尚未核对',
-        kind: 'warn-full',
-      });
-    }
+    blocks.push({ text: refundText, title: refundTitle, kind: refundKind });
   }
 
   if (hasAfterSale && item?.warningType === 'sf_fee_incomplete') {
     blocks.push({
-      label: '',
-      text: '⚠ 运费未查询完整，暂不能计算最终亏损',
+      text: '⚠利润待核对',
+      title: '运费未查询完整，暂不能计算最终亏损',
       kind: 'warn-full',
     });
     return blocks;
@@ -244,9 +422,10 @@ function buildAfterSaleBlocks(item, snap, helpers = {}) {
   const profit = item.profit;
   const sfFee = item.sfFee;
   if (item.warningType === 'full_refund_shipping_loss' && sfFee != null) {
+    const loss = fmtMoney(sfFee);
     blocks.push({
-      label: '',
-      text: `⚠ 全额退款，仍产生顺丰费用${fmtMoney(sfFee)}，预计亏损${fmtMoney(sfFee)}`,
+      text: `⚠亏损${loss}`,
+      title: `全额退款，仍产生顺丰费用${loss}，预计亏损${loss}`,
       kind: 'warn-full',
     });
     return blocks;
@@ -255,11 +434,24 @@ function buildAfterSaleBlocks(item, snap, helpers = {}) {
   if (profit == null || sfFee == null) return blocks;
 
   if (profit > EPSILON) {
-    blocks.push({ label: '', text: `实际剩余利润：${fmtMoney(profit)}`, kind: 'profit' });
+    blocks.push({
+      text: `利${fmtMoney(profit)}`,
+      title: `实际剩余利润：${fmtMoney(profit)}`,
+      kind: 'profit',
+    });
   } else if (Math.abs(profit) <= EPSILON) {
-    blocks.push({ label: '', text: '退款后不含运费利润为0元', kind: 'warn' });
+    blocks.push({
+      text: '⚠利润0元',
+      title: '退款后不含运费利润为0元',
+      kind: 'warn',
+    });
   } else {
-    blocks.push({ label: '', text: `⚠ 预计亏损${fmtMoney(Math.abs(profit))}`, kind: 'warn-full' });
+    const loss = fmtMoney(Math.abs(profit));
+    blocks.push({
+      text: `⚠亏损${loss}`,
+      title: `预计亏损${loss}`,
+      kind: 'warn-full',
+    });
   }
 
   return blocks;
@@ -291,7 +483,7 @@ function buildRenderFingerprint(item, packageId) {
 function buildCardHtml(blocks, stale) {
   const rowCls = [
     'qsf-inline-fee-row',
-    blocks.some((b) => b.text === '…') ? 'qsf-inline-fee-loading' : '',
+    blocks.some((b) => /查询中/.test(b.text)) ? 'qsf-inline-fee-loading' : '',
     stale ? 'qsf-inline-stale' : '',
   ].filter(Boolean).join(' ');
   const segs = blocks.map((block) => {
@@ -303,12 +495,11 @@ function buildCardHtml(blocks, stale) {
       block.kind === 'warn' ? 'qsf-inline-warn' : '',
       block.kind === 'warn-full' ? 'qsf-inline-warn-full' : '',
     ].filter(Boolean).join(' ');
-    if (block.kind === 'profit' || !block.label) {
-      return `<span class="${segCls}"><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
-    }
-    return `<span class="${segCls}"><span class="qsf-inline-fee-label">${escHtml(block.label)}</span><span class="qsf-inline-fee-amount">${escHtml(block.text)}</span></span>`;
+    const titleAttr = block.title ? ` title="${escHtml(block.title)}"` : '';
+    const text = block.text || `${block.label || ''}${block.label ? '' : ''}`;
+    return `<span class="${segCls}"${titleAttr}><span class="qsf-inline-fee-amount">${escHtml(text)}</span></span>`;
   }).join('<span class="qsf-inline-gap"></span>');
-  return `<div class="${rowCls}">${segs}</div>`;
+  return `<span class="${rowCls}">${segs}</span>`;
 }
 
 function escHtml(s) {
@@ -501,17 +692,33 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      .qsf-inline-fee-wrap { margin: 4px 0 6px; font-size: 12px; line-height: 1.45; }
-      .qsf-inline-fee-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 0; }
+      .qsf-inline-fee-wrap {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        min-width: 0;
+        margin: 0 10px;
+        font-size: 12px;
+        line-height: 1.4;
+        white-space: nowrap;
+        vertical-align: middle;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .qsf-inline-fee-row {
+        display: inline-flex;
+        align-items: center;
+        flex-wrap: nowrap;
+        white-space: nowrap;
+      }
       .qsf-inline-seg { display: inline-flex; align-items: baseline; white-space: nowrap; }
-      .qsf-inline-gap { display: inline-block; width: 10px; }
-      .qsf-inline-fee-label { color: #666; margin-right: 2px; }
+      .qsf-inline-gap { display: inline-block; width: 8px; }
       .qsf-inline-fee-amount { color: #1a1a1a; font-weight: 500; }
       .qsf-inline-fee-muted .qsf-inline-fee-amount { color: #888; font-weight: 400; }
       .qsf-inline-refund .qsf-inline-fee-amount { color: #c45656; }
       .qsf-inline-profit .qsf-inline-fee-amount { color: #2e7d32; }
       .qsf-inline-warn .qsf-inline-fee-amount { color: #d48806; }
-      .qsf-inline-warn-full .qsf-inline-fee-amount { color: #d4380d; }
+      .qsf-inline-warn-full .qsf-inline-fee-amount { color: #d4380d; font-weight: 600; }
       .qsf-inline-fee-loading .qsf-inline-fee-amount { color: #888; }
       .qsf-inline-stale .qsf-inline-fee-amount { opacity: 0.85; }
     `;
@@ -572,43 +779,6 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
     return cards.filter((c) => c.querySelector('.order-card-title-id'));
   }
 
-  function findQtyAndPayAnchors(card) {
-    const scopes = [card.querySelector('.order-card-footer'), card].filter(Boolean);
-    let qtyEl = null;
-    let payEl = null;
-    for (const scope of scopes) {
-      for (const el of scope.querySelectorAll('div, span, p')) {
-        if (el.closest('.qsf-inline-fee-wrap')) continue;
-        const t = normText(el.textContent);
-        if (!t || t.length > 80) continue;
-        if (/共\s*\d+\s*件/.test(t) && !/(实付|应付)/.test(t)) qtyEl = qtyEl || el;
-        if (/(实付|应付)/.test(t) && (/[¥￥]/.test(t) || /\d/.test(t))) payEl = payEl || el;
-      }
-    }
-    return { qtyEl, payEl };
-  }
-
-  function ensureFeeWrap(card) {
-    let wrap = card.querySelector('.qsf-inline-fee-wrap');
-    if (!wrap) {
-      wrap = document.createElement('div');
-      wrap.className = 'qsf-inline-fee-wrap';
-      wrap.setAttribute('data-qsf-inline', VERSION);
-      const { qtyEl, payEl } = findQtyAndPayAnchors(card);
-      if (qtyEl && payEl && qtyEl.parentElement === payEl.parentElement) {
-        const parent = qtyEl.parentElement;
-        parent.insertBefore(wrap, qtyEl.compareDocumentPosition(payEl) & Node.DOCUMENT_POSITION_FOLLOWING ? payEl : qtyEl.nextSibling);
-      } else if (payEl?.parentElement) {
-        payEl.parentElement.insertBefore(wrap, payEl);
-      } else {
-        const header = card.querySelector('.order-card-header');
-        if (header?.parentElement) header.parentElement.insertBefore(wrap, header.nextSibling);
-        else card.appendChild(wrap);
-      }
-    }
-    return wrap;
-  }
-
   function fmtMoney(n) {
     if (n == null || !Number.isFinite(Number(n))) return null;
     return `${Number(n).toFixed(2)}元`;
@@ -642,8 +812,7 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
       if (item.state === 'partial' || item.sfFeeComplete === false) {
         const ok = item.sfSuccessCount ?? 0;
         const all = item.sfWaybillCount ?? ok;
-        const fail = item.sfFailedCount ?? Math.max(0, all - ok);
-        if (fail > 0) return `${total}元（${ok}/${all}，另${fail}单查询失败）`;
+        if (all > ok) return `${total}元(${ok}/${all})`;
       }
       return `${total}元`;
     }
@@ -659,9 +828,10 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
   }
 
   function paintCard(snap, item, stale) {
-    const { card, packageId, hasRefund } = snap;
+    const { card, packageId } = snap;
     if (!packageId) return;
-    const wrap = ensureFeeWrap(card);
+    const wrap = ensureFeeWrap(card, VERSION);
+    ensureFeeWrapPosition(card, wrap);
     const cached = renderCache.get(packageId);
     if (!item && cached?.blocks) {
       const r = renderCardHtml(wrap, cached.blocks, cached.stale, cached.fingerprint);
@@ -669,8 +839,10 @@ function renderCardHtml(wrap, blocks, stale, fingerprint) {
       return;
     }
     const blocks = item ? buildBlocks(item, snap) : [
-      { label: '月结费用：', text: '…', kind: 'muted' },
-      ...(snap?.hasAfterSale || snap?.hasRefund ? [{ label: '用户申请退款金额：', text: '…', kind: 'muted' }] : []),
+      { text: '月结查询中…', title: '顺丰月结费用：查询中…', kind: 'muted' },
+      ...(snap?.hasAfterSale || snap?.hasRefund
+        ? [{ text: '退款查询中…', title: '用户申请退款金额：查询中…', kind: 'muted' }]
+        : []),
     ];
     const fingerprint = item ? buildRenderFingerprint(item, packageId) : `${packageId}:loading`;
     const r = renderCardHtml(wrap, blocks, stale, fingerprint);
